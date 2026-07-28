@@ -398,7 +398,14 @@ replayable.
 
 This is what makes cheap exploration real. "Give me eight crate proportions" becomes
 eight branches, one contact sheet, one pick — instead of eight sequential
-build-look-undo cycles. Breadth is the thing agents are actually good at, and current
+build-look-undo cycles.
+
+**Built** — `lathe/mcp/session.py`. A commit stores the *whole* program rather than a delta,
+since a pure program is already a complete description of its geometry and replaying it is
+what checkout means. One correction from building it: content-addressing on
+`(parent, program)` does **not** make a repeated program idempotent, because after a commit
+the tip is its own parent, so identical text addresses differently. The no-op check has to
+compare against the tip's text directly. A test caught that. Breadth is the thing agents are actually good at, and current
 tools tax it heavily.
 
 ## 9. Agent interface
@@ -419,6 +426,23 @@ rich language does not.
 
 `apply` returning the validation report inline is important: the agent sees consequences
 in the same turn it makes the change, rather than needing to remember to look.
+
+**Built** — `lathe/mcp/`, nine tools over stdio, 26 tests. Three notes from building it.
+
+`library()` is **omitted rather than stubbed**, because the parametric component library it
+searches does not exist. A tool that always returns nothing is worse than a tool the agent
+knows is absent.
+
+`apply` takes **Python**, not the §4 DSL — §14.3's `escape { python … }` promoted to the
+only mode. That is the honest state of the parser question, and it costs the unit types:
+a bare `600` in the build layer is a silent metres-versus-millimetres bug rather than a
+compile error. The *perception* layer does enforce units, which is why `raycast` requires
+one and `box` does not. The seam is visible from the outside, which is a reason to close it.
+
+`apply` runs `exec` in a namespace preloaded with the API. That is a **restricted namespace,
+not a sandbox** — builtins are present. Acceptable for a local stdio server whose caller
+could already run Python, and not acceptable over a network transport. Stated in the tool
+description rather than left for someone to discover.
 
 ## 10. What stays human
 

@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 
@@ -30,13 +30,17 @@ def render(solid: Solid, out_path: str, views: Sequence[str] = DEFAULT_VIEWS,
            modes: Sequence[str] = ("shaded",), materials: Optional[Dict[str, str]] = None,
            default_material: str = "default", size: int = 720, samples: int = 64,
            ground: bool = True, smooth_angle_deg: float = 32.0,
-           label: Optional[str] = None, verbose: bool = False) -> Dict[str, str]:
+           label: Optional[str] = None, verbose: bool = False,
+           sheet: bool = True) -> Dict[str, Any]:
     """Render `solid` and composite each mode into its own contact sheet.
 
     materials maps tag name -> material key (see _render_worker.MATERIALS), so
     section 5.2 provenance is what drives shading.
 
-    Returns {mode: sheet_path}.
+    Returns {mode: sheet_path}. With sheet=False, returns
+    {mode: [(view, frame_path), ...]} of raw frames instead -- which is what a
+    caller building its own grid wants, since compositing sheets into a sheet
+    doubles every label.
     """
     exe = blender_path()
     if exe is None:
@@ -80,12 +84,22 @@ def render(solid: Solid, out_path: str, views: Sequence[str] = DEFAULT_VIEWS,
                 "render produced nothing.\n--- stdout ---\n%s\n--- stderr ---\n%s"
                 % (proc.stdout[-3000:], proc.stderr[-4000:]))
 
-        out = {}
+        out: Dict[str, Any] = {}
         base, ext = os.path.splitext(out_path)
         for mode in modes:
             tiles = [(v, job["out_pattern"] % (mode, v)) for v in views]
             tiles = [(v, p) for v, p in tiles if os.path.exists(p)]
             if not tiles:
+                continue
+            if not sheet:
+                kept = []
+                for v, p in tiles:
+                    dest = "%s_%s_%s%s" % (base, mode, v, ext)
+                    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".",
+                                exist_ok=True)
+                    shutil.copyfile(p, dest)
+                    kept.append((v, dest))
+                out[mode] = kept
                 continue
             dest = out_path if len(modes) == 1 else "%s_%s%s" % (base, mode, ext)
             _contact_sheet(tiles, dest,
