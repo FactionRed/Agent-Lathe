@@ -3,7 +3,7 @@
 DESIGN.md §9. The layer that lets an agent drive Lathe instead of a human writing
 Python.
 
-Nine tools, deliberately. A large tool surface drowns the model. The expressive
+Ten tools, deliberately. A large tool surface drowns the model. The expressive
 weight lives in the program text `lathe_apply` takes and the expression language
 `lathe_query` speaks.
 
@@ -30,6 +30,7 @@ python lathe/mcp/tests/smoke.py --render   # includes render and glb
 
 | Tool | Does | Read-only |
 |---|---|---|
+| `lathe_setup` | Audit the install, check the project page, build a welcome piece | no |
 | `lathe_apply` | Run a program, commit it, return the validation report inline | no |
 | `lathe_query` | Measure geometry — 13 scalars, selectors, raycast, symmetry | yes |
 | `lathe_observe` | Multi-view contact sheet: shaded, matte or wire | yes |
@@ -43,6 +44,43 @@ python lathe/mcp/tests/smoke.py --render   # includes render and glb
 `library()` from §9 is **not** implemented. It searches a parametric component
 library, and no such library exists yet. A tool that returns nothing is worse than
 a tool an agent knows is absent.
+
+## First run
+
+`lathe_setup` answers three questions: can this environment build and render, is
+the local copy current, and what does a working Lathe program look like.
+
+It is **two-step by design**. With `confirm=false` it reports and asks. The agent
+relays anything missing, the user answers, and only then does `confirm=true`
+install the Python packages. A tool call cannot pause to ask mid-flight, and
+installing packages unasked is not acceptable. Blender is never installed for you —
+it is a large third-party installer, so the report points at blender.org.
+
+The welcome piece is generated as **program text**, seeded from the machine and
+account name. Two users get different pieces; the same user gets the same piece
+until they pass a new seed. Four styles — stool, planter, lantern, pedestal — and
+eight palettes, with proportions, segment counts and detail all varying.
+
+It hands back the program rather than only the geometry on purpose. A first
+artefact should be something the user can read and edit, which is the premise of
+the whole system.
+
+**Every seed must build.** The generator shipped with three bugs, all of them rules
+already written down in DESIGN.md and not applied here:
+
+- **Coincident contact is not connection** (§13). Stacked parts placed flush came
+  out as separate components — 7 of 8 pedestals, then intermittently on lanterns
+  and planters. Whether a boolean joins a shared plane depends on the exact
+  coordinates, which makes it worse than a consistent failure. Every assembly now
+  laps deliberately.
+- **Logical face counts are tessellation-dependent on curved surfaces** (§5.3). A
+  round stool seat is a cylinder, so `assert_count(faces("top"), 3)` was wrong; its
+  side is one facet per segment.
+- **Window openings sized against the radius severed the corner posts** once the
+  side count rose. They are sized against the face chord now.
+
+150 consecutive seeds build cleanly. `test_welcome.py` keeps three seeds per style
+as a regression guard, including the ones that used to fail.
 
 ## Why `apply` returns the report
 

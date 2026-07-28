@@ -49,9 +49,11 @@ reasons rather than prompt-quality ones.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
-- **MCP surface: nine tools**, so an agent can author, measure, look, validate, branch,
+- **MCP surface: ten tools**, so an agent can author, measure, look, validate, branch,
   compare and export without anyone writing Python. See [lathe/mcp/](lathe/mcp/README.md).
-- 290 tests pass. Checked against closed-form truth, not smoke.
+- `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
+  eight palettes, different for every user, handed back as editable program text.
+- 304 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 

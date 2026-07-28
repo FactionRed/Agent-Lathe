@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -608,6 +609,215 @@ async def lathe_compare(params: CompareInput) -> Any:
             return Image(data=fh.read(), format="png")
     except Exception as exc:
         return _fail(exc)
+
+
+# -------------------------------------------------------------------- setup
+
+class SetupInput(BaseModel):
+    """Input for lathe_setup."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    confirm: bool = Field(
+        default=False,
+        description=("False reports what is missing and asks. True installs the "
+                     "missing Python packages with pip. Only set True after the "
+                     "user has agreed in conversation."))
+    seed: Optional[int] = Field(
+        default=None,
+        description=("Seed for the welcome piece. Omit for one derived from the "
+                     "machine and account, which is stable for this user. Pass "
+                     "any integer for a different piece."))
+    style: Optional[str] = Field(
+        default=None,
+        description="Force a style: stool, planter, lantern or pedestal. Omit to let the seed pick.")
+    build: bool = Field(
+        default=True,
+        description="Build and commit the welcome piece. False audits only.")
+    check_upstream: bool = Field(
+        default=True, description="Read the project's public GitHub metadata.")
+
+
+@mcp.tool(
+    name="lathe_setup",
+    annotations={"title": "First-Run Setup and Welcome Piece",
+                 "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": True})
+async def lathe_setup(params: SetupInput) -> str:
+    """Audit the install, check the project page, and build a welcome piece.
+
+    Call this first in a new session. It answers three questions: is this
+    environment able to build and render, is the local copy current, and what does
+    a working Lathe program actually look like.
+
+    The welcome piece is generated as **program text**, seeded from the machine and
+    account name. Two users get different pieces; the same user gets the same piece
+    every time until they pass a new seed. Style and palette both vary. The program
+    is committed to the session, so `lathe_observe` will render it immediately and
+    `lathe_export` will write it out.
+
+    It hands back the program rather than only the geometry on purpose -- a first
+    artefact should be something the user can read and edit, which is the whole
+    premise here.
+
+    Two-step by design. With `confirm=False` it reports and asks. Relay the missing
+    dependencies to the user, get an answer, and only then call again with
+    `confirm=True`. A tool call cannot pause to ask mid-flight, and installing
+    packages is not something to do unasked.
+
+    Blender is never installed for you. It is a large third-party installer, so the
+    report points at blender.org instead. Without it, building, measuring,
+    validating and OBJ/STL export all still work; only `lathe_observe`,
+    `lathe_compare` and glTF/FBX export need it.
+
+    Args:
+        params (SetupInput): confirm, optional seed, optional style, build,
+            check_upstream.
+
+    Returns:
+        str: An environment table, the upstream project line, and -- when the
+        environment can build -- the welcome piece's commit, its style and palette,
+        the material map for `lathe_observe`, and the full program text.
+
+    Examples:
+        - "set up lathe" -> defaults; relay anything missing before confirming.
+        - "give me a different one" -> pass any new seed.
+        - "show me a lantern" -> style='lantern'.
+        - Don't call with confirm=True until the user has actually agreed.
+
+    Network note:
+        With check_upstream, this reads api.github.com for the repo's public
+        metadata. That response is treated strictly as data -- a version string and
+        a description. Nothing fetched is executed or followed.
+    """
+    from . import welcome
+
+    a = welcome.audit()
+    out: List[str] = ["Lathe %s   Python %s   %s"
+                      % (a["version"], a["python"], a["platform"]), ""]
+
+    out.append("environment")
+    for import_name, why, pip_name in welcome.DEPS:
+        ok = import_name in a["present"]
+        out.append("    %-12s %-4s %s" % (import_name, "ok" if ok else "MISSING", why))
+    out.append("    %-12s %-4s %s"
+               % ("blender", "ok" if a["blender_ok"] else "--",
+                  a["blender"] or "not found: lathe_observe, lathe_compare and "
+                                  "glTF/FBX export are unavailable"))
+    out.append("")
+
+    if params.check_upstream:
+        up = welcome.fetch_upstream()
+        if up.get("reachable"):
+            out.append("project   %s" % up["url"])
+            if up.get("description"):
+                out.append("          %s" % up["description"])
+            out.append("          branch %s   last push %s   %s stars   %s open issues"
+                       % (up.get("default_branch"), up.get("pushed_at"),
+                          up.get("stars"), up.get("open_issues")))
+            out.append("          this is a local checkout; `git pull` updates it")
+        else:
+            out.append("project   %s (not reachable: %s)"
+                       % (up["url"], up.get("reason", "")))
+        out.append("")
+
+    # -- the gate ---------------------------------------------------------
+    if a["missing"]:
+        out.append("NOT READY -- %d package(s) missing" % len(a["missing"]))
+        out.append("")
+        for d in a["missing"]:
+            out.append("    %-12s %s" % (d["module"], d["why"]))
+        out.append("")
+        out.append("    %s" % a["pip_command"])
+        out.append("")
+        if not params.confirm:
+            out.append("Ask the user whether to install these, then call")
+            out.append("lathe_setup again with confirm=true. Do not confirm on")
+            out.append("their behalf.")
+            return "\n".join(out)
+
+        out.append("installing (confirmed)...")
+        import asyncio
+        import subprocess
+        args = [sys.executable, "-m", "pip", "install"] + [
+            d["pip"] for d in a["missing"]]
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, args, capture_output=True, text=True, timeout=900)
+            tail = (proc.stdout or "").strip().splitlines()[-4:]
+            out += ["    " + line for line in tail]
+            again = welcome.audit()
+            if again["missing"]:
+                out.append("")
+                out.append("    still missing: %s"
+                           % ", ".join(d["module"] for d in again["missing"]))
+                out.append("    Install them yourself and call lathe_setup again.")
+                return "\n".join(out)
+            out.append("    all dependencies present now")
+            a = again
+        except Exception as exc:
+            out.append("    pip failed: %s: %s" % (type(exc).__name__, exc))
+            out.append("    Run the command above yourself, then call this again.")
+            return "\n".join(out)
+        out.append("")
+
+    if not params.build:
+        out.append("READY. Pass build=true for a welcome piece, or write your own "
+                   "program and call lathe_apply.")
+        return "\n".join(out)
+
+    # -- the welcome piece -------------------------------------------------
+    try:
+        w = welcome.generate(params.seed, params.style)
+    except ValueError as exc:
+        return "\n".join(out + ["", "ERROR", "  %s" % exc])
+
+    try:
+        commit, solid, _diff, _new = WS.apply(
+            w["program"], "welcome piece (%s, seed %s)" % (w["style"], w["seed_label"]),
+            branch="welcome")
+    except Exception as exc:
+        return "\n".join(out + ["", "the welcome program failed to build:", "",
+                                _fail(exc), "",
+                                "This is a bug in the generator, not in your "
+                                "environment. The program text was:", "",
+                                w["program"]])
+
+    out += [
+        "READY",
+        "",
+        "your welcome piece   %s, %s palette" % (w["style"], w["palette"]),
+        "                     seed %s -- pass a different seed for another"
+        % w["seed_label"],
+        "                     %s" % "; ".join(w["notes"]),
+        "",
+        _headline(solid, commit),
+        "  on branch %s" % commit.branch,
+        "",
+    ]
+    try:
+        out.append(_check(commit.id))
+    except Exception as exc:
+        out.append("  validation could not run: %s" % exc)
+
+    out += [
+        "",
+        "materials for lathe_observe:",
+        "    %s" % json.dumps(w["materials"]),
+        "",
+        "next: lathe_observe to see it, lathe_export to write it out, or edit the",
+        "program below and lathe_apply it. The seed only chose the numbers -- the",
+        "program is ordinary Lathe text.",
+        "",
+        "-" * 70,
+        w["program"].rstrip(),
+        "-" * 70,
+    ]
+    if not a["blender_ok"]:
+        out.append("")
+        out.append("Blender is not installed, so lathe_observe cannot render this.")
+        out.append("Get it from https://www.blender.org/download/ and set "
+                   "LATHE_BLENDER, or keep going without renders.")
+    return "\n".join(out)
 
 
 def main() -> None:
