@@ -25,3 +25,6 @@ out/smoke*.png
 out/*.obj
 out/*.mtl
 out/*.stl
+
+# Generated previews
+out/*_preview.html

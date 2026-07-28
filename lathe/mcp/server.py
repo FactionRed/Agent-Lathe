@@ -624,6 +624,109 @@ async def lathe_compare(params: CompareInput) -> Any:
         return _fail(exc)
 
 
+# --------------------------------------------------------------------- view
+
+class ViewInput(BaseModel):
+    """Input for lathe_view."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    path: Optional[str] = Field(
+        default=None,
+        description=("Where to write the .html preview. Defaults to the Lathe "
+                     "output directory, named after the commit."))
+    materials: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=("Tag -> material key, same keys as lathe_observe. Drives the "
+                     "Material shading mode; the Tags mode ignores it and uses "
+                     "distinct hues instead."))
+    wire_angle: float = Field(
+        default=12.0,
+        description=("Crease angle in degrees for the wireframe overlay. Only "
+                     "edges sharper than this are drawn, so triangulation "
+                     "diagonals stay hidden."),
+        ge=0.0, le=180.0)
+    ref: Optional[str] = Field(default=None, description="Commit or branch. Default HEAD.")
+
+
+@mcp.tool(
+    name="lathe_view",
+    annotations={"title": "Write an Interactive 3D Preview",
+                 "readOnlyHint": False, "destructiveHint": True,
+                 "idempotentHint": True, "openWorldHint": False})
+async def lathe_view(params: ViewInput) -> str:
+    """Write a standalone interactive preview the user can orbit in a browser.
+
+    Use this when a still image will not settle the question -- "what does the
+    back of that joint look like", "is the bevel even all the way round", "how
+    much of the mesh is the fillet". A contact sheet from `lathe_observe` cannot
+    be turned over; this can.
+
+    The page is one self-contained HTML file with the mesh embedded and a small
+    WebGL renderer inline. No network, no libraries, no Blender. It works offline
+    and it works where a CSP blocks every external host.
+
+    What the user gets: a full orbit camera with six preset views, an adjustable
+    lighting rig with five presets, four shading modes -- Material, Tags, Matte
+    and Normals -- a crease-only wireframe overlay, a metric ground grid, and a
+    live readout of vertices, triangles, edges, logical faces, components, genus,
+    extent, volume and area, plus a per-tag triangle breakdown.
+
+    That last one earns its place: it is how you notice a bevel is 78% of the
+    triangle budget.
+
+    Overwrites the destination if it exists.
+
+    Args:
+        params (ViewInput): optional path, optional materials, wire_angle,
+            optional ref.
+
+    Returns:
+        str: JSON with the absolute path, byte size, triangle count and the
+        controls available. Tell the user the path and that opening it in a
+        browser gives them the orbit view -- this tool cannot display it inline.
+
+    Examples:
+        - "let me look at it properly" -> defaults
+        - "show me where the wood grain would go" -> pass materials
+        - "I want to see the topology" -> lower wire_angle, then use the
+          Wireframe toggle in the page
+        - Prefer lathe_query for anything measurable; prefer lathe_observe when a
+          fixed set of angles is enough.
+    """
+    try:
+        from ..viewer import write as write_view
+        solid = WS.solid(params.ref)
+        commit = WS.commit(params.ref)
+        dest = params.path
+        if not dest:
+            os.makedirs(OUT_DIR, exist_ok=True)
+            dest = os.path.join(OUT_DIR, "%s_preview.html" % commit.id)
+        if not dest.lower().endswith((".html", ".htm")):
+            return ("ERROR\n  the preview is an HTML page, so `path` must end in "
+                    ".html (got %r)" % dest)
+        info = await _off_loop(
+            write_view, solid, dest, materials=params.materials or {},
+            title=solid.name)
+        info.update({
+            "commit": commit.id,
+            "open_with": "any browser -- it is a single offline file",
+            "controls": {
+                "camera": "drag orbit, wheel zoom, shift-drag pan, "
+                          "double-click home, 6 presets",
+                "lighting": "key intensity/azimuth/height, fill, rim, ambient, "
+                            "gloss, 5 rig presets",
+                "shading": ["Material", "Tags", "Matte", "Normals"],
+                "overlays": ["crease wireframe", "100 mm ground grid"],
+                "readout": ["vertices", "triangles", "edges", "logical faces",
+                            "components", "genus", "extent", "volume", "area",
+                            "per-tag triangles"],
+            },
+        })
+        return json.dumps(info, indent=2)
+    except Exception as exc:
+        return _fail(exc)
+
+
 # -------------------------------------------------------------------- setup
 
 class SetupInput(BaseModel):

@@ -329,6 +329,22 @@ Two render modes matter more than beauty shots:
   accurately than from shaded renders, where lighting confounds form.
 - **Wireframe-over-shaded** — makes topology density legible.
 
+**Tier 3b — the interactive preview.** Built: `lathe/viewer/`. A contact sheet cannot be
+turned over, and some questions only an orbit answers. One self-contained HTML file with the
+mesh embedded and a WebGL renderer inline — no network, no library, and it survives a CSP
+that blocks every external host. Full orbit camera, an adjustable lighting rig, four shading
+modes, a crease-only wireframe, and a live readout including a per-tag triangle breakdown.
+
+Hand-rolled WebGL was the cheaper choice, not the purist one: a CDN import cannot load under
+the CSP at all, and inlining three.js would ship ~600 KB per preview against ~300 lines for
+a Lambert-plus-Blinn shader and an orbit camera.
+
+Two portability notes worth keeping. GLSL ES 1.0 **forbids indexing a uniform array with a
+non-constant expression**, so `palette[int(vTag)]` does not compile in WebGL 1 — the legal
+form is a constant-bounded loop, which also keeps the per-vertex payload at one float rather
+than three. And the canvas reads its clear colour and grid tint from the CSS custom
+properties, so the render cannot drift out of step with the panels when the theme flips.
+
 **Tier 4 — diffs.** Before/after contact sheets plus a per-vertex displacement heat map,
 and a textual op-diff from the history DAG. This directly answers "did my edit do what I
 intended?", which is the question the agent actually has and currently cannot ask.

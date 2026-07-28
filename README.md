@@ -49,7 +49,12 @@ reasons rather than prompt-quality ones.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
-- **MCP surface: ten tools**, so an agent can author, measure, look, validate, branch,
+- **The `.lathe` language**: `600mm` and `0.6m` unify, and `box(600, 600, 600)` fails to
+  compile. Units are part of the type, so the metres-versus-millimetres bug cannot be written.
+- **Interactive preview**: one self-contained HTML file — full orbit camera, adjustable
+  lighting rig, four shading modes, and live vertex/polygon statistics with a per-tag
+  breakdown. No library, no network, no Blender.
+- **MCP surface: eleven tools**, so an agent can author, measure, look, validate, branch,
   compare and export without anyone writing Python. See [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
@@ -65,10 +70,11 @@ Stated plainly, because the gap decides whether this is useful to you.
   an `mm()` helper.
 - **No UVs, textures or baking.** Four UV and texture rules report *not checked*, so about a
   third of `game_prop_pbr` is untested against real data.
-- **No `.lathe` DSL, so no unit types.** The MCP surface takes Python, which is §14.3's
-  `escape { python … }` promoted to the only mode. A bare `600` in the build layer is a silent
-  metres-versus-millimetres bug rather than a compile error. The perception layer *does*
-  enforce units, which is why `raycast` demands one and `box` does not.
+- **The DSL covers authoring, not everything.** `.lathe` has no loops and no user functions,
+  so procedural work still goes through the Python escape hatch — where a bare `600` is once
+  again a silent bug. The two paths differ in safety too: the DSL interpreter is an AST walker
+  with no builtins in scope, while the Python path runs `exec` in a restricted namespace that
+  is explicitly not a sandbox.
 - **No animation-grade topology.** Procedural geometry has no edge flow. The villager is a
   stylized figure, not a riggable character, and [models/README.md](models/README.md) says so
   in detail.
@@ -99,7 +105,9 @@ Set `LATHE_BLENDER` if Blender is not on `PATH`.
 | `lathe/verify/` | Rule engine and profiles |
 | `lathe/perceive/` | Numeric probes and structural summaries |
 | `lathe/render/` | Contact sheets, mattes, wireframes |
-| [`lathe/mcp/`](lathe/mcp/README.md) | The nine-tool agent surface |
+| [`lathe/mcp/`](lathe/mcp/README.md) | The eleven-tool agent surface |
+| `lathe/lang/` | The `.lathe` language: units, parser, evaluator |
+| `lathe/viewer/` | Self-contained interactive WebGL preview |
 | `lathe/io/` | Export |
 | `models/` | The three test assets and the build runner |
 | `prototype/` | Kernel spikes that settled the design questions |

@@ -3,7 +3,7 @@
 DESIGN.md §9. The layer that lets an agent drive Lathe instead of a human writing
 Python.
 
-Ten tools, deliberately. A large tool surface drowns the model. The expressive
+Eleven tools, deliberately. A large tool surface drowns the model. The expressive
 weight lives in the program text `lathe_apply` takes and the expression language
 `lathe_query` speaks.
 
@@ -50,6 +50,7 @@ a ping or honour a cancellation for the duration.
 | `lathe_apply` | Run a program, commit it, return the validation report inline | no |
 | `lathe_query` | Measure geometry — 13 scalars, selectors, raycast, symmetry | yes |
 | `lathe_observe` | Multi-view contact sheet: shaded, matte or wire | yes |
+| `lathe_view` | Standalone interactive preview: orbit, relight, read stats | no |
 | `lathe_check` | Full rule report against a profile | yes |
 | `lathe_export` | Write obj/stl natively, glb/gltf/fbx/usd/ply via Blender | no |
 | `lathe_log` | Commits, branches, current head | yes |
@@ -97,6 +98,30 @@ already written down in DESIGN.md and not applied here:
 
 150 consecutive seeds build cleanly. `test_welcome.py` keeps three seeds per style
 as a regression guard, including the ones that used to fail.
+
+## Looking at the model
+
+Three levels, cheapest first.
+
+`lathe_query` answers anything measurable in 30–90 µs of text. Reach for it first.
+
+`lathe_observe` renders a fixed contact sheet. Good when a known set of angles
+settles the question; needs Blender.
+
+`lathe_view` writes a **standalone interactive page** — one HTML file with the
+mesh embedded and a WebGL renderer inline. No network, no libraries, no Blender,
+and it works under a CSP that blocks every external host. Use it when a still
+frame cannot answer the question: what the back of a joint looks like, whether a
+bevel is even all the way round, how much of the budget the fillet ate.
+
+The page carries a full orbit camera with six presets, an adjustable lighting rig
+with five, four shading modes (Material, Tags, Matte, Normals), a crease-only
+wireframe, a 100 mm ground grid, and a readout of vertices, triangles, edges,
+logical faces, components, genus, extent, volume and area — plus a per-tag
+triangle breakdown. That last column is how you notice a bevel is 78% of the mesh.
+
+Hand-rolled WebGL rather than a library: inlining three.js would put ~600 KB in
+every preview, and a CDN import cannot load at all under the CSP.
 
 ## Why `apply` returns the report
 

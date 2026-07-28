@@ -25,6 +25,7 @@ from mcp.client.stdio import stdio_client  # noqa: E402
 EXPECTED = {
     "lathe_setup", "lathe_apply", "lathe_query", "lathe_observe", "lathe_check",
     "lathe_export", "lathe_log", "lathe_branch", "lathe_checkout", "lathe_compare",
+    "lathe_view",
 }
 
 PROGRAM = '''
@@ -79,7 +80,7 @@ async def main():
             # -- handshake and schemas ------------------------------------
             listed = await s.list_tools()
             names = {t.name for t in listed.tools}
-            check("ten tools advertised", names == EXPECTED,
+            check("eleven tools advertised", names == EXPECTED,
                   "missing %s, unexpected %s" % (EXPECTED - names, names - EXPECTED))
             check("every tool has a description",
                   all((t.description or "").strip() for t in listed.tools))
@@ -167,6 +168,30 @@ async def main():
                 mtl = out.replace(".obj", ".mtl")
                 if os.path.exists(mtl):
                     os.remove(mtl)
+
+            # -- interactive preview (no Blender needed) -------------------
+            import re as _re
+            view_path = os.path.join(REPO, "out", "stdio_preview.html")
+            r = await s.call_tool("lathe_view", {"params": {
+                "path": view_path,
+                "materials": {"top": "wood_mid", "post": "metal"}}})
+            body = text_of(r)
+            check("view writes a preview", os.path.exists(view_path), body[:160])
+            if os.path.exists(view_path):
+                info = json.loads(body)
+                check("view reports the real byte size",
+                      info["bytes"] == os.path.getsize(view_path),
+                      "%s vs %s" % (info["bytes"], os.path.getsize(view_path)))
+                check("view page is self contained", info["self_contained"])
+                page = open(view_path, encoding="utf-8").read()
+                check("view page embeds the mesh", '"pos":"' in page)
+                check("view page has no external references",
+                      not any(u.startswith(("http:", "https:", "//"))
+                              for u in _re.findall(
+                                  r'(?:src|href)\s*=\s*"([^"]+)"', page)))
+                os.remove(view_path)
+            r = await s.call_tool("lathe_view", {"params": {"path": "nope.txt"}})
+            check("view rejects a non-html path", "must end in .html" in text_of(r))
 
             # -- render ---------------------------------------------------
             if do_render:
