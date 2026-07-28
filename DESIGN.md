@@ -126,14 +126,26 @@ let final = bevel(carved, rim, width = bevel_w, segments = 2, harden_normals = t
 uv  final by angle_seams(threshold = 66deg, pack = square)
 mat oak on final.faces(all)
 
-emit "SM_Crate_Wood" {
+emit "SM_Crate_Wood" {                        # a stem, not a filename
   profile        : game_prop_pbr
   target         : unreal
-  lod            : auto(4)
+  lod            : auto(4)                    # fans out to _LOD0 .. _LOD3
   budget         : { tris_lod0: 1500 }
   texel_density  : 5.12 px/cm
 }
 ```
+
+**`emit` names a stem.** One `emit` produces a *set* of artifacts, and the emitter appends
+the suffixes. `lod: auto(4)` yields `SM_Crate_Wood_LOD0` through `_LOD3`; a texture set
+yields `T_Crate_Wood_D` and siblings. Naming rules therefore apply to the emitted artifact
+names, never to the stem — a stem carrying its own `_LOD0` would produce
+`SM_Crate_Wood_LOD0_LOD0`.
+
+This was underspecified in v0, and the first implementation of §7 read `lod` as *this
+asset's LOD index* rather than *how many to generate*. Both readings are defensible from
+the v0 text, which is the problem. Under the index reading, the verifier then reported the
+example above as violating N401 for the missing `_LOD0` — a false positive produced
+entirely by the ambiguity, in the one subsystem whose value depends on not emitting those.
 
 Notes on what is deliberately absent: no mode switches, no selection calls, no
 `transform_apply`. The program declares origin and scale, and the emitter must honor
@@ -311,7 +323,7 @@ expression.
 | W204 | warn  | LOD chain missing a step, or reduction ratio off target |
 | W205 | warn  | Silhouette deviation between LOD*n* and LOD0 above threshold |
 | W302 | warn  | Texel density variance outside target ±10% |
-| N401 | note  | Naming does not match `[Prefix]_[Name]_[Variant]_[LOD]` |
+| N401 | note  | Emitted artifact name does not match `[Prefix]_[Name]_[Variant]_[LOD]` (see §4 — the rule reads emitted names, not the `emit` stem) |
 | N402 | note  | Dense topology in low-curvature, non-deforming regions |
 
 Additional profiles: `character_skinned` (adds edge-loop counts at joints, pole
