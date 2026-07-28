@@ -56,7 +56,8 @@ def _pear(tag="pear"):
     return L.revolve(pear_profile(), segments=40, tag=tag)
 
 
-def build(bowl_r=0.115, bowl_h=mm(68), wall=mm(6), bevel_w=mm(1.2)):
+def build(bowl_r=0.115, bowl_h=mm(68), wall=mm(6), bevel_w=mm(1.2), bevel=True):
+    """bevel=False gives the low poly for baking; see models/chair.py."""
     bowl = L.revolve(
         L.bowl_profile(bowl_r, bowl_h, wall, foot_radius=bowl_r * 0.42),
         segments=64, tag="bowl", name="SM_BowlFruit_Ceramic_LOD0")
@@ -102,9 +103,15 @@ def build(bowl_r=0.115, bowl_h=mm(68), wall=mm(6), bevel_w=mm(1.2)):
     if not scene.status_ok():
         raise L.LatheError("bowl scene is not a valid solid")
 
-    scene = L.bevel(scene, width=bevel_w, segments=2, min_dihedral=62,
-                    only_tags=["bowl"], min_length=mm(3))
+    if bevel:
+        scene = L.bevel(scene, width=bevel_w, segments=2, min_dihedral=62,
+                        only_tags=["bowl"], min_length=mm(3))
     return scene
+
+
+def build_pair(**kw):
+    """(low, high) for baking. Same parameters, bevel off and on."""
+    return build(bevel=False, **kw), build(bevel=True, **kw)
 
 
 DECLARED_COMPONENTS = None  # measured at build time; a scene, not one solid

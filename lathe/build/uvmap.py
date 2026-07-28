@@ -113,7 +113,29 @@ def unwrap(solid: Solid, max_angle: float = 66.0, resolution: int = 1024,
     vmapping, indices, uvs = atlas.get_mesh(0)
 
     uv_corner = _corner_uvs(msh.tris, indices, uvs, resolution)
+    uv_corner = _inset_border(uv_corner, pad, resolution)
     return solid.with_uv(uv_corner, uv_set=uv_set)
+
+
+def _inset_border(uv: np.ndarray, pad_px: int, resolution: int) -> np.ndarray:
+    """Keep the whole layout `pad_px` clear of the atlas edge.
+
+    xatlas pads between charts but will place one flush against the boundary, and
+    W202 counts the border as a padding case -- correctly, since bleed at the edge
+    of a map is the same defect as bleed between islands. The inset costs a
+    fraction of a percent of density, which is far less than the warning it clears.
+    """
+    if uv.size == 0:
+        return uv
+    margin = pad_px / float(resolution)
+    lo = uv.reshape(-1, 2).min(axis=0)
+    hi = uv.reshape(-1, 2).max(axis=0)
+    span = np.maximum(hi - lo, 1e-12)
+    room = 1.0 - 2.0 * margin
+    if room <= 0:
+        return uv
+    scale = min(1.0, float(np.min(room / span)))
+    return margin + (uv - lo) * scale
 
 
 def _corner_uvs(orig_tris, indices, uvs, resolution) -> np.ndarray:

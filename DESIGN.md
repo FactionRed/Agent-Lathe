@@ -594,6 +594,18 @@ Defaults do the real work here.
 caps the system at static-prop grade until remeshing matures. Accept the cap, state it,
 and do not sell character work in Phase 1–4.
 
+**Baking scales with how much of the mesh the detail was.** `lathe/bake/` moves a modelled
+bevel into a normal map, which is the production answer to the W302 spread above. It worked
+spectacularly on one asset and did nothing for another, and the difference is instructive: the
+chair's bevel was 87% of its triangles, so the low poly is 308 against 2,324 and the density
+spread falls from 418% off target to 17%. The bowl's bevel was 18%, so its low poly is 82% of
+the original and the warning is unchanged — because that asset's density problem was never the
+bevel. It is the pole triangles of its spheres and revolves.
+
+The general lesson: a bake is not a fix for bad UV density, it is a fix for *detail carried in
+geometry*. Diagnose which one you have first. The verifier's per-island evidence is what makes
+that distinguishable.
+
 **A rule that never runs is not a rule.** E106, W202, W203 and W302 shipped with the verifier
 and reported *not checked* on every asset for as long as nothing produced a UV set. They were
 tested — against fixtures built by hand for the purpose — and that was enough to prove the

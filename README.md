@@ -48,6 +48,10 @@ reasons rather than prompt-quality ones.
 - Verifier: E101–E108 plus W201, W202, W203, W206, W302, N401, across three profiles.
 - UV unwrapping via xatlas, packed to a declared texel density, so the UV rules run on real
   layouts rather than reporting *not checked*.
+- High-to-low baking of normal and AO maps, with cage extrusion derived from the subject's own
+  size and Flip Y switched by target engine. Moves a bevel out of geometry and into texture:
+  the chair drops from 2,324 triangles to **308**, and its density spread from 418% off target
+  to 17%.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
@@ -70,10 +74,9 @@ Stated plainly, because the gap decides whether this is useful to you.
   Python against the API.
 - **No unit types.** §4.1 wants a bare `600` to be a type error. Today it is float metres plus
   an `mm()` helper.
-- **No baking.** UVs are generated and the UV rules now run against real layouts, but nothing
-  bakes a high-poly source down to a normal map yet. Which is also why W302 warns on the test
-  assets: their bevels are carried in geometry rather than baked, and the resulting slivers
-  cannot hit a uniform texel density.
+- **No LOD chain.** W204 and W205 need a chain and a silhouette comparison, and nothing
+  generates one. Reduction would need decimation or retopology.
+- **No component library**, so §9's `library()` tool is omitted rather than stubbed.
 - **The DSL covers authoring, not everything.** `.lathe` has no loops and no user functions,
   so procedural work still goes through the Python escape hatch — where a bare `600` is once
   again a silent bug. The two paths differ in safety too: the DSL interpreter is an AST walker

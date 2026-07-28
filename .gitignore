@@ -28,3 +28,6 @@ out/*.stl
 
 # Generated previews
 out/*_preview.html
+
+# Baked maps (regenerate with models/bake_all.py)
+out/bake/
