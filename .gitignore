@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Blender
+*.blend1
+*.blend2
+
+# Prototype output
+prototype/out/
+*.glb
+*.fbx
+
+# Claude Code local settings
+.claude/settings.local.json
