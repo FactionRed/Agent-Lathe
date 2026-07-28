@@ -16,3 +16,7 @@ prototype/out/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Render output: the contact sheets in models/README.md are committed as
+# evidence. Scratch renders are not.
+out/smoke*.png
