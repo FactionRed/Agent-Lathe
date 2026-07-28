@@ -20,3 +20,8 @@ prototype/out/
 # Render output: the contact sheets in models/README.md are committed as
 # evidence. Scratch renders are not.
 out/smoke*.png
+
+# Exported assets (regenerate with lathe_export)
+out/*.obj
+out/*.mtl
+out/*.stl

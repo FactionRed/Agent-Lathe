@@ -48,7 +48,10 @@ reasons rather than prompt-quality ones.
 - Verifier: E101–E108 plus W201, W202, W203, W302, N401, across three profiles.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
-- 264 tests pass. Checked against closed-form truth, not smoke.
+- Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
+- **MCP surface: nine tools**, so an agent can author, measure, look, validate, branch,
+  compare and export without anyone writing Python. See [lathe/mcp/](lathe/mcp/README.md).
+- 290 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 
@@ -60,14 +63,16 @@ Stated plainly, because the gap decides whether this is useful to you.
   an `mm()` helper.
 - **No UVs, textures or baking.** Four UV and texture rules report *not checked*, so about a
   third of `game_prop_pbr` is untested against real data.
-- **No MCP surface.** §9's tool layer does not exist, so an agent cannot drive this yet. Only
-  someone writing Python can.
+- **No `.lathe` DSL, so no unit types.** The MCP surface takes Python, which is §14.3's
+  `escape { python … }` promoted to the only mode. A bare `600` in the build layer is a silent
+  metres-versus-millimetres bug rather than a compile error. The perception layer *does*
+  enforce units, which is why `raycast` demands one and `box` does not.
 - **No animation-grade topology.** Procedural geometry has no edge flow. The villager is a
   stylized figure, not a riggable character, and [models/README.md](models/README.md) says so
   in detail.
 
-The DSL and the MCP surface are the two that matter for the premise. Without them this is a
-good library rather than an agent-facing tool.
+The DSL is the one that still matters for the premise. The MCP surface exists now, so an
+agent can drive this end to end.
 
 ## Quick start
 
@@ -92,6 +97,8 @@ Set `LATHE_BLENDER` if Blender is not on `PATH`.
 | `lathe/verify/` | Rule engine and profiles |
 | `lathe/perceive/` | Numeric probes and structural summaries |
 | `lathe/render/` | Contact sheets, mattes, wireframes |
+| [`lathe/mcp/`](lathe/mcp/README.md) | The nine-tool agent surface |
+| `lathe/io/` | Export |
 | `models/` | The three test assets and the build runner |
 | `prototype/` | Kernel spikes that settled the design questions |
 
