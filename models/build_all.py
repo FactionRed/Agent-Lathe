@@ -22,10 +22,13 @@ from lathe.verify import mesh as vmesh  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
 
+# Texel density targets follow furniture and character practice: large props at
+# 5.12 px/cm, a figure a little higher because it carries a face.
 ASSETS = {
     "chair": dict(
         module="models.chair", views=("front", "side", "iso", "iso2"),
         spec=dict(components=1, origin="bottom_center", budget={"tris_lod0": 3000}),
+        uv=dict(resolution=1024, texel_density=5.12, channel="D"),
     ),
     "bowl": dict(
         module="models.bowl", views=("front", "side", "iso", "top"),
@@ -33,10 +36,12 @@ ASSETS = {
         # one body. Declared explicitly rather than read back from the geometry:
         # a declaration copied from the measurement checks nothing.
         spec=dict(components=1, origin="bottom_center", budget={"tris_lod0": 9000}),
+        uv=dict(resolution=1024, texel_density=5.12, channel="D"),
     ),
     "villager": dict(
         module="models.villager", views=("front", "side", "iso", "iso2"),
         spec=dict(components=1, origin="bottom_center", budget={"tris_lod0": 4000}),
+        uv=dict(resolution=2048, texel_density=10.24, channel="D"),
     ),
 }
 
@@ -55,6 +60,20 @@ def build_one(key, render_it=True, size=440, samples=48, modes=("shaded",)):
           % (build_s, solid.n_tris, solid.components(),
              ", ".join(sorted(set(solid.tags.values())))))
 
+    # -- unwrap, after the booleans and the bevel ---------------------------
+    # A boolean drops the UV channel because it creates surface the unwrap never
+    # saw, so unwrapping has to come last. That is the real pipeline order too.
+    uvcfg = cfg.get("uv")
+    if uvcfg:
+        import lathe.build as LB
+        t0 = time.perf_counter()
+        solid = LB.unwrap(solid, resolution=uvcfg["resolution"],
+                          texel_density=uvcfg["texel_density"])
+        d = LB.texel_density(solid, uvcfg["resolution"])
+        print("  unwrapped in %.1f s   %d islands   %.2f-%.2f px/cm at %d"
+              % (time.perf_counter() - t0, len(d["islands"]), d["min"], d["max"],
+                 uvcfg["resolution"]))
+
     # -- probes (section 6) ------------------------------------------------
     msh = solid.mesh()
     print()
@@ -67,9 +86,24 @@ def build_one(key, render_it=True, size=440, samples=48, modes=("shaded",)):
     spec_kw = dict(cfg["spec"])
     if spec_kw.get("components") is None:
         spec_kw["components"] = solid.components()
+    uv_sets = None
+    if solid.has_uv and uvcfg:
+        res = uvcfg["resolution"]
+        base = solid.name.replace("SM_", "T_", 1).replace("_LOD0", "")
+        spec_kw.update(
+            texel_density=uvcfg["texel_density"],
+            texture_resolution=res,
+            textures=(vmesh.TextureDecl(name="%s_%s" % (base, uvcfg["channel"]),
+                                        width=res, height=res,
+                                        channel=uvcfg["channel"]),),
+            bake=vmesh.BakeSpec(targets=("normal", "ao"), uv_set=solid.uv_set,
+                                unique_uv=True),
+        )
+        uv_sets = {solid.uv_set: solid.uv}
     spec = vmesh.EmitSpec(profile="game_prop_pbr", target="unreal", **spec_kw)
     asset = vmesh.Asset(
-        mesh=vmesh.from_manifold(solid.man, name=solid.name), spec=spec)
+        mesh=vmesh.from_manifold(solid.man, name=solid.name, uv_sets=uv_sets),
+        spec=spec)
     report = vengine.check(asset)
     print()
     print("  " + str(report).strip().replace("\n", "\n  "))
@@ -107,8 +141,11 @@ def main():
     print("=" * 74)
     worst = 0
     for k, (solid, report, _) in results.items():
-        n_err = sum(1 for f in report.findings if f.severity == "error")
-        n_warn = sum(1 for f in report.findings if f.severity == "warn")
+        # Use the report's own accessors. Comparing f.severity to the string
+        # "error" is always False -- severity is a Severity, not a str -- so the
+        # summary printed PASS over a failing report until this was fixed.
+        n_err = len(report.errors)
+        n_warn = len(report.warnings)
         worst = max(worst, 1 if n_err else 0)
         print("  %-10s %6d tris  %d comp  %d error %d warn  %s"
               % (k, solid.n_tris, solid.components(), n_err, n_warn,

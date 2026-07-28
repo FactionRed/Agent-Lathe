@@ -97,16 +97,41 @@ class Solid:
     man: object                      # manifold3d.Manifold
     tags: Mapping[int, str] = field(default_factory=dict)
     name: str = "solid"
+    # Per-corner UV, (T, 3, 2). Per corner rather than per vertex because a seam
+    # is precisely where one vertex needs two UVs, and splitting the vertex to
+    # express that would hand Manifold a mesh it welds straight back.
+    uv: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    uv_set: str = "UV0"
     _mesh: Optional[pmesh.Mesh] = field(default=None, compare=False, repr=False)
 
     # -- lifting -----------------------------------------------------------
 
     def mesh(self) -> pmesh.Mesh:
-        """The neutral mesh, memoised. Carries part_id and face_id across."""
+        """The neutral mesh, memoised. Carries part_id, face_id and UV across."""
         if self._mesh is None:
-            msh = pmesh.from_manifold(self.man, name=self.name, parts=dict(self.tags))
+            msh = pmesh.from_manifold(self.man, name=self.name, parts=dict(self.tags),
+                                      uv=self.uv)
             object.__setattr__(self, "_mesh", msh)
         return self._mesh
+
+    @property
+    def has_uv(self) -> bool:
+        return self.uv is not None
+
+    def with_uv(self, uv, uv_set: str = "UV0") -> "Solid":
+        arr = np.asarray(uv, dtype=np.float64)
+        if arr.shape != (self.n_tris, 3, 2):
+            raise LatheError(
+                "UV must be per corner with shape (%d, 3, 2), got %s"
+                % (self.n_tris, (arr.shape,)))
+        return Solid(self.man, dict(self.tags), self.name, arr, uv_set)
+
+    def _carry_uv(self) -> Optional[np.ndarray]:
+        """UV survives a rigid transform: the surface parameterisation does not
+        care where the solid sits. Scaling changes texel density but not the
+        mapping, and W302 measures density from world area, so it still reads
+        correctly afterwards."""
+        return self.uv
 
     @property
     def n_tris(self) -> int:
@@ -126,29 +151,37 @@ class Solid:
         return self.man.status() == m3.Error.NoError and not self.man.is_empty()
 
     def rename(self, name: str) -> "Solid":
-        return Solid(self.man, dict(self.tags), name)
+        return Solid(self.man, dict(self.tags), name, self.uv, self.uv_set)
 
     def retag(self, **renames: str) -> "Solid":
         """Rename tags: `s.retag(body="seat")`."""
         flipped = {v: k for k, v in renames.items()}
         tags = {i: flipped.get(t, t) for i, t in self.tags.items()}
-        return Solid(self.man, tags, self.name)
+        return Solid(self.man, tags, self.name, self.uv, self.uv_set)
 
     # -- transforms --------------------------------------------------------
 
     def translate(self, v) -> "Solid":
-        return Solid(self.man.translate(tuple(float(x) for x in v)), dict(self.tags), self.name)
+        return Solid(self.man.translate(tuple(float(x) for x in v)),
+                     dict(self.tags), self.name, self._carry_uv(), self.uv_set)
 
     def rotate(self, degrees) -> "Solid":
-        return Solid(self.man.rotate(tuple(float(x) for x in degrees)), dict(self.tags), self.name)
+        return Solid(self.man.rotate(tuple(float(x) for x in degrees)),
+                     dict(self.tags), self.name, self._carry_uv(), self.uv_set)
 
     def scale(self, v) -> "Solid":
         if np.isscalar(v):
             v = (v, v, v)
-        return Solid(self.man.scale(tuple(float(x) for x in v)), dict(self.tags), self.name)
+        return Solid(self.man.scale(tuple(float(x) for x in v)),
+                     dict(self.tags), self.name, self._carry_uv(), self.uv_set)
 
     def mirror(self, normal) -> "Solid":
-        return Solid(self.man.mirror(tuple(float(x) for x in normal)), dict(self.tags), self.name)
+        # Mirroring reverses winding, so the corner order flips with it.
+        uv = self.uv
+        if uv is not None:
+            uv = uv[:, ::-1, :].copy()
+        return Solid(self.man.mirror(tuple(float(x) for x in normal)),
+                     dict(self.tags), self.name, uv, self.uv_set)
 
     def at(self, x=0.0, y=0.0, z=0.0) -> "Solid":
         return self.translate((x, y, z))
@@ -164,6 +197,10 @@ class Solid:
             man = self.man ^ other.man
         merged = dict(self.tags)
         merged.update(other.tags)
+        # UV is deliberately dropped. A boolean creates surface the unwrap never
+        # saw, and there is no honest way to parameterise it after the fact --
+        # carrying the old channel would put a stale mapping on new geometry.
+        # Unwrap after the booleans, which is the order a real pipeline uses.
         out = Solid(man, merged, self.name)
         if not out.status_ok():
             raise LatheError(

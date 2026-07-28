@@ -375,6 +375,7 @@ expression.
 | W201 | warn  | Origin not at declared reference point |
 | W202 | warn  | UV padding below the table for target resolution |
 | W203 | warn  | Non-power-of-two texture dimensions |
+| W206 | warn  | Collapsed UV area — real surface sampling a single texel |
 | W204 | warn  | LOD chain missing a step, or reduction ratio off target |
 | W205 | warn  | Silhouette deviation between LOD*n* and LOD0 above threshold |
 | W302 | warn  | Texel density variance outside target ±10% |
@@ -592,6 +593,18 @@ Defaults do the real work here.
 **Topology quality ceiling.** SDF and boolean output does not have artist edge flow. This
 caps the system at static-prop grade until remeshing matures. Accept the cap, state it,
 and do not sell character work in Phase 1–4.
+
+**A rule that never runs is not a rule.** E106, W202, W203 and W302 shipped with the verifier
+and reported *not checked* on every asset for as long as nothing produced a UV set. They were
+tested — against fixtures built by hand for the purpose — and that was enough to prove the
+logic and not enough to prove anything was connected to it. Wiring an unwrapper in
+immediately produced a genuine E106 on the chair, a W302 spread of 5.1 to 26.5 px/cm, and a
+gap with no owner at all: a *collapsed* UV island does not overlap anything, so E106 stayed
+silent and nothing else spoke. That became W206.
+
+The lesson generalises past UVs. `needs=` makes a rule skip safely, which is the right
+behaviour and also a very quiet failure mode. A profile where a third of the rules have never
+seen production data reads as passing.
 
 **Coincident contact is not connection.** Two solids meeting exactly on a shared plane come
 back as separate components, because the contact has measure zero. The villager's boots met

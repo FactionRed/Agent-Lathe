@@ -355,6 +355,19 @@ def tight_padding() -> Asset:
     return Asset(mesh, prop_spec(texel_density=None))
 
 
+def collapsed_uv() -> Asset:
+    """W206 only. The `top` island is scaled to effectively nothing, so real
+    surface samples a single texel.
+
+    This case has an owner because testing the unwrapper found it did not: an
+    island with no uv area does not *overlap* anything, so E106 correctly stayed
+    silent and no other rule spoke. texel_density is left undeclared so W302 does
+    not fire on the same defect.
+    """
+    mesh = box_mesh("SM_Crate_Wood_LOD0")
+    return Asset(scale_island(mesh, "top", 1e-7), prop_spec(texel_density=None))
+
+
 def texel_variance() -> Asset:
     """W302 only. The top island is scaled to 0.8, so it sits at 4.1 px/cm
     against a 5.12 target -- outside the +/-10% band, inside the padding table."""
@@ -540,5 +553,6 @@ EXPECTED: Dict[str, Tuple[str, ...]] = {
     "tight_padding": ("W202",),
     "npot_textures": ("W203",),
     "texel_variance": ("W302",),
+    "collapsed_uv": ("W206",),
     "bad_name": ("N401",),
 }

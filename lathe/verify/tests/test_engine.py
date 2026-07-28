@@ -42,7 +42,9 @@ class TestRegistry(unittest.TestCase):
     def test_approximate_rules_declare_it(self):
         """A rule that only estimates has to say so, or the report overclaims."""
         approximate = {c for c, s in RULES.items() if s.is_approximate}
-        self.assertEqual(approximate, {"W202", "W302"})
+        # W206 cannot tell a deliberately unmapped surface from an accidental
+        # collapse, so it declares itself approximate too.
+        self.assertEqual(approximate, {"W202", "W206", "W302"})
         for code in approximate:
             self.assertGreater(len(RULES[code].approximation), 40)
 

@@ -5,9 +5,16 @@ These are the rules whose report shape section 7 shows verbatim, so they are
 the ones held closest to the sample output.
 
 Division of labour, so that one defect produces one finding: E106 owns islands
-that intersect, W202 owns islands that are merely too close. A pair with zero
-gap is an overlap, so W202 defers to E106 rather than reporting the same pair
-twice. An agent that receives two codes for one defect will fix it twice.
+that intersect, W202 owns islands that are merely too close, W206 owns UV area
+that has collapsed. A pair with zero gap is an overlap, so W202 defers to E106
+rather than reporting the same pair twice. An agent that receives two codes for
+one defect will fix it twice.
+
+W206 exists because of a gap found while testing the unwrapper: collapsing every
+corner onto one point produces a single *degenerate* island rather than two
+overlapping ones, so E106 correctly stayed silent and nothing else spoke. A
+surface with no UV area gets one texel, which is a real defect with no previous
+owner.
 """
 
 from __future__ import annotations
@@ -359,6 +366,78 @@ def _island_gap(uvl, a, b) -> float:
                 if best == 0.0:
                     return 0.0
     return best
+
+
+# --------------------------------------------------------------------- W206
+
+
+@rule(
+    "W206",
+    WARN,
+    "UV area collapsed, so the surface samples a single texel",
+    needs=("uv",),
+    defaults={"min_uv_area": 1e-9, "min_share": 0.001, "max_report": 6},
+    approximation="Compares each island's uv area against its share of world "
+    "area. It cannot tell a deliberately unmapped surface -- the inside of a "
+    "sealed box, say -- from an accidental collapse, so it reports and lets the "
+    "author decide.",
+)
+def w206(ctx):
+    """An island with no uv area gets one texel spread over real surface.
+
+    Needs only a uv set, not a bake declaration: a collapsed layout is wrong for
+    a tiling map too, which is why this does not defer to E106's applicability.
+    """
+    uvl = ctx.uv()
+    min_area = float(ctx.p("min_uv_area"))
+    min_share = float(ctx.p("min_share"))
+
+    total_world = sum(isl.world_area for isl in uvl.islands) or 1.0
+    offenders = []
+    for isl in uvl.islands:
+        if isl.world_area <= 0:
+            continue
+        share = isl.world_area / total_world
+        if isl.uv_area <= min_area or (isl.uv_area < min_area * 1e3
+                                       and share > min_share):
+            offenders.append((isl, share))
+    if not offenders:
+        return
+
+    offenders.sort(key=lambda t: -t[1])
+    shown = offenders[: int(ctx.p("max_report"))]
+    rows = [
+        "%-14s uv area %.3g   world %.4f m2   %s%% of the surface"
+        % (isl.name, isl.uv_area, isl.world_area, num(100.0 * share))
+        for isl, share in shown
+    ]
+    lost = sum(share for _, share in offenders)
+    yield ctx.finding(
+        summary="UV area collapsed on %d island%s"
+                % (len(offenders), "" if len(offenders) == 1 else "s"),
+        entity=ctx.name,
+        where=[
+            ("islands", [isl.name for isl, _ in shown]),
+            ("measured", rows),
+        ],
+        evidence="%d of %d islands have effectively no uv area, covering %s%% of "
+                 "the surface; each samples a single texel"
+                 % (len(offenders), len(uvl.islands), num(100.0 * lost)),
+        data={
+            "islands": [isl.name for isl, _ in offenders],
+            "world_share": round(lost, 6),
+            "uv_areas": [float(isl.uv_area) for isl, _ in offenders],
+        },
+        repair=Repair(
+            "uv.unwrap",
+            (Raw(ctx.name),),
+            {"resolution": int(ctx.emit.texture_resolution)},
+            alternatives=(
+                "if the surface is deliberately unmapped, exclude it from the "
+                "uv set rather than leaving it collapsed",
+            ),
+        ),
+    )
 
 
 # --------------------------------------------------------------------- W302

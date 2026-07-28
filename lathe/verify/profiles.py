@@ -38,6 +38,7 @@ GAME_PROP_PBR = register_profile(
             "E108",  # component count
             "W201",  # origin not at declared reference
             "W202",  # uv padding
+            "W206",  # collapsed uv area
             "W203",  # non-power-of-two textures
             "W302",  # texel density variance
             "N401",  # naming convention
@@ -78,6 +79,7 @@ CHARACTER_SKINNED = register_profile(
             "E108",
             "W201",
             "W202",
+            "W206",
             "W203",
             "W302",
             "N401",
@@ -122,6 +124,7 @@ MOBILE_VR = register_profile(
             "E108",
             "W201",
             "W202",
+            "W206",
             "W203",
             "W302",
             "N401",

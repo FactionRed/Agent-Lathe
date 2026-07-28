@@ -191,7 +191,8 @@ class TestJson(unittest.TestCase):
     def test_not_checked_is_reported_in_json_too(self):
         data = json.loads(run(fixtures.clean_solid()).to_json())
         codes = [s["code"] for s in data["not_checked"]]
-        self.assertEqual(sorted(codes), ["E106", "W202", "W203", "W302"])
+        self.assertEqual(sorted(codes),
+                         ["E106", "W202", "W203", "W206", "W302"])
 
 
 class TestFindingContract(unittest.TestCase):
