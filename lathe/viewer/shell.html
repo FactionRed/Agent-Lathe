@@ -1,0 +1,600 @@
+<title>__TITLE__</title>
+<style>
+  /* A machine-tool readout, not a web app. Cast-iron ground, silkscreen labels,
+     amber DRO numerals. Every token is redefined per theme; components only ever
+     reference tokens, so the viewer's toggle can win in both directions. */
+  :root {
+    --iron: #191c1e; --panel: #22272aef; --rule: #343b3f; --rule-soft: #2a3033;
+    --ink: #dfe4e4; --dim: #8b979a; --dro: #ffb347; --dykem: #2f7fb5;
+    --pass: #6fa87c; --sink: #101314;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --iron: #e8e6e1; --panel: #f6f5f2f2; --rule: #c3c0b8; --rule-soft: #d6d3cb;
+      --ink: #1b1f21; --dim: #5f6668; --dro: #a8620a; --dykem: #1d5c86;
+      --pass: #3f7a50; --sink: #d8d5ce;
+    }
+  }
+  :root[data-theme="light"] {
+    --iron: #e8e6e1; --panel: #f6f5f2f2; --rule: #c3c0b8; --rule-soft: #d6d3cb;
+    --ink: #1b1f21; --dim: #5f6668; --dro: #a8620a; --dykem: #1d5c86;
+    --pass: #3f7a50; --sink: #d8d5ce;
+  }
+  :root[data-theme="dark"] {
+    --iron: #191c1e; --panel: #22272aef; --rule: #343b3f; --rule-soft: #2a3033;
+    --ink: #dfe4e4; --dim: #8b979a; --dro: #ffb347; --dykem: #2f7fb5;
+    --pass: #6fa87c; --sink: #101314;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--iron); color: var(--ink); overflow: hidden;
+    font: 12.5px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #wrap { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  canvas.dragging { cursor: grabbing; }
+
+  /* Instrument modules: square, hairline-ruled, no drop shadow. */
+  .panel {
+    position: absolute; background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 2px; padding: 0; backdrop-filter: blur(10px);
+    max-height: calc(100% - 24px); overflow: auto;
+  }
+  #hud { top: 12px; left: 12px; width: 246px; }
+  #ctl { top: 12px; right: 12px; width: 244px; }
+  .sect { padding: 9px 12px 11px; }
+  .sect + .sect { border-top: 1px solid var(--rule-soft); }
+
+  h2 {
+    margin: 0 0 7px; font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--dim); font-weight: 700;
+  }
+  #asset {
+    margin: 0; font-size: 12.5px; letter-spacing: .01em; color: var(--ink);
+    font-weight: 600; word-break: break-all;
+  }
+  #asset + .tagline { color: var(--dim); font-size: 10px; letter-spacing: .1em;
+    text-transform: uppercase; margin-top: 3px; }
+
+  /* The readout. Labels in silkscreen, figures in amber mono. */
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 2px 0; vertical-align: baseline; }
+  td.k {
+    color: var(--dim); padding-right: 10px; white-space: nowrap;
+    font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  }
+  td.v {
+    text-align: right; color: var(--dro); font-weight: 600; font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  .pill {
+    display: inline-block; padding: 0 6px; border-radius: 2px; font-size: 9.5px;
+    letter-spacing: .09em; text-transform: uppercase; font-weight: 700;
+    border: 1px solid currentColor;
+  }
+  .pill.ok { color: var(--pass); }
+  .pill.no { color: var(--dim); }
+  .swatch {
+    display: inline-block; width: 8px; height: 8px; margin-right: 7px;
+    vertical-align: baseline; border: 1px solid #0004;
+  }
+
+  label.row {
+    display: flex; align-items: center; gap: 9px; margin: 4px 0; color: var(--dim);
+    font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  }
+  label.row > span { flex: 0 0 54px; }
+  input[type=range] {
+    flex: 1; min-width: 0; accent-color: var(--dro); height: 14px;
+    background: transparent;
+  }
+  input[type=range]:focus-visible { outline: 1px solid var(--dro); outline-offset: 2px; }
+  .val {
+    flex: 0 0 36px; text-align: right; color: var(--ink); font-weight: 600;
+    font-size: 11px; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  .btns { display: flex; flex-wrap: wrap; gap: 4px; }
+  .btns + .btns { margin-top: 4px; }
+  button {
+    font: inherit; font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+    font-weight: 600; padding: 4px 8px; border-radius: 2px;
+    border: 1px solid var(--rule); background: var(--sink); color: var(--dim);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--dro); color: var(--ink); }
+  button:focus-visible { outline: 1px solid var(--dro); outline-offset: 1px; }
+  button[aria-pressed="true"] {
+    background: var(--dro); border-color: var(--dro); color: var(--sink);
+  }
+  #hint {
+    position: absolute; bottom: 12px; left: 12px; color: var(--dim);
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 2px;
+    padding: 5px 10px; font-size: 10px; letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  #err {
+    position: absolute; inset: 0; display: none; place-content: center;
+    text-align: center; padding: 40px; color: var(--dim); line-height: 1.6;
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  @media (max-width: 720px) {
+    #hud, #ctl { width: calc(50% - 16px); }
+    #hint { display: none; }
+  }
+</style>
+
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <div class="panel" id="hud">
+    <div class="sect">
+      <p id="asset">__NAME__</p>
+      <p class="tagline">Lathe preview</p>
+    </div>
+    <div class="sect">
+      <h2>Mesh</h2>
+      <table id="stats"></table>
+    </div>
+    <div class="sect">
+      <h2>Parts &middot; triangles</h2>
+      <table id="parts"></table>
+    </div>
+  </div>
+
+  <div class="panel" id="ctl">
+    <div class="sect">
+    <h2>Shading</h2>
+    <div class="btns" id="modes"></div>
+    <div class="btns" id="toggles"></div>
+    </div>
+
+    <div class="sect">
+    <h2>Lighting</h2>
+    <div class="btns" id="rigs"></div>
+    <label class="row"><span>Key</span><input type="range" id="keyI" min="0" max="200" value="100"><b class="val" id="keyIv"></b></label>
+    <label class="row"><span>Azimuth</span><input type="range" id="keyA" min="-180" max="180" value="35"><b class="val" id="keyAv"></b></label>
+    <label class="row"><span>Height</span><input type="range" id="keyE" min="-89" max="89" value="38"><b class="val" id="keyEv"></b></label>
+    <label class="row"><span>Fill</span><input type="range" id="fillI" min="0" max="150" value="40"><b class="val" id="fillIv"></b></label>
+    <label class="row"><span>Rim</span><input type="range" id="rimI" min="0" max="200" value="55"><b class="val" id="rimIv"></b></label>
+    <label class="row"><span>Ambient</span><input type="range" id="ambI" min="0" max="100" value="22"><b class="val" id="ambIv"></b></label>
+    <label class="row"><span>Gloss</span><input type="range" id="gloss" min="0" max="100" value="30"><b class="val" id="glossv"></b></label>
+    </div>
+
+    <div class="sect">
+    <h2>Camera</h2>
+    <div class="btns" id="views"></div>
+    </div>
+  </div>
+
+  <div id="hint">drag orbit &middot; wheel zoom &middot; shift-drag pan &middot; double-click home</div>
+  <div id="err"></div>
+</div>
+
+<script id="lathe-data" type="application/json">__DATA__</script>
+<script>
+"use strict";
+(function () {
+  const RAW = JSON.parse(document.getElementById("lathe-data").textContent);
+  const cv = document.getElementById("c");
+  const errBox = document.getElementById("err");
+
+  function fail(msg) {
+    errBox.style.display = "grid";
+    errBox.textContent = msg;
+    cv.style.display = "none";
+  }
+
+  const gl = cv.getContext("webgl", { antialias: true, alpha: false,
+                                      preserveDrawingBuffer: false });
+  if (!gl) { fail("This browser did not provide a WebGL context, so the model cannot be drawn."); return; }
+
+  // ---- decode buffers -------------------------------------------------
+  function b64(str, Type) {
+    const bin = atob(str);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Type(bytes.buffer);
+  }
+  const P = b64(RAW.pos, Float32Array);     // 3 per vertex, already un-indexed
+  const N = b64(RAW.nrm, Float32Array);     // face normal per vertex (flat shading)
+  const T = b64(RAW.tag, Float32Array);     // tag index per vertex
+  const E = b64(RAW.edge, Float32Array);    // wireframe line pairs
+  const nVerts = P.length / 3;
+
+  // ---- gl helpers -----------------------------------------------------
+  function sh(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+      throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  function prog(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  }
+  function buf(data) {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    return b;
+  }
+
+  const VS = `
+    attribute vec3 aPos; attribute vec3 aNrm; attribute float aTag;
+    uniform mat4 uProj, uView;
+    varying vec3 vN, vW; varying float vTag;
+    void main() {
+      vN = aNrm; vW = aPos; vTag = aTag;
+      gl_Position = uProj * uView * vec4(aPos, 1.0);
+    }`;
+
+  // Three directional lights, a hemispheric ambient, and Blinn-Phong gloss.
+  const FS = `
+    precision highp float;
+    varying vec3 vN, vW; varying float vTag;
+    uniform vec3 uKeyDir, uFillDir, uRimDir, uEye;
+    uniform float uKeyI, uFillI, uRimI, uAmb, uGloss;
+    uniform vec3 uTagCol[__NTAG__];
+    uniform float uMode;     // 0 material, 1 tag, 2 matte, 3 normals
+    void main() {
+      vec3 n = normalize(vN);
+      // GLSL ES 1.0 refuses uTagCol[int(vTag)]: a uniform array index must be a
+      // constant or a loop counter. A constant-bounded loop is the legal form,
+      // and it keeps the per-vertex payload at one float instead of three.
+      vec3 base = vec3(0.78);
+      int want = int(vTag + 0.5);
+      for (int i = 0; i < __NTAG__; i++) {
+        if (i == want) { base = uTagCol[i]; }
+      }
+      if (uMode > 1.5 && uMode < 2.5) { gl_FragColor = vec4(0.06,0.06,0.08,1.0); return; }
+      if (uMode > 2.5) { gl_FragColor = vec4(n * 0.5 + 0.5, 1.0); return; }
+      vec3 V = normalize(uEye - vW);
+      float sky = 0.5 + 0.5 * n.z;                 // Z is up in Lathe
+      vec3 lit = base * uAmb * mix(0.55, 1.0, sky);
+      float kd = max(dot(n, uKeyDir), 0.0);
+      lit += base * kd * uKeyI;
+      lit += base * max(dot(n, uFillDir), 0.0) * uFillI * vec3(0.82,0.88,1.0);
+      lit += base * max(dot(n, uRimDir), 0.0) * uRimI * vec3(1.0,0.96,0.9);
+      if (uGloss > 0.001) {
+        float s = pow(max(dot(normalize(uKeyDir + V), n), 0.0), 16.0 + uGloss * 96.0);
+        lit += vec3(s * uGloss * uKeyI * 0.6);
+      }
+      lit = lit / (lit + vec3(0.85));              // gentle roll-off, no clipping
+      gl_FragColor = vec4(pow(lit, vec3(1.0/2.2)), 1.0);
+    }`;
+
+  const LINE_VS = `
+    attribute vec3 aPos; uniform mat4 uProj, uView;
+    void main() { gl_Position = uProj * uView * vec4(aPos, 1.0); }`;
+  const LINE_FS = `
+    precision mediump float; uniform vec4 uCol;
+    void main() { gl_FragColor = uCol; }`;
+
+  let pMesh, pLine;
+  try {
+    // Global replace: __NTAG__ appears twice in the fragment shader (the array
+    // size and the loop bound), and a string pattern only swaps the first.
+    const NT = String(Math.max(RAW.tags.length, 1));
+    const sub = (s) => s.replace(/__NTAG__/g, NT);
+    pMesh = prog(sub(VS), sub(FS));
+    pLine = prog(LINE_VS, LINE_FS);
+  } catch (e) { fail("Shader compilation failed: " + e.message); return; }
+
+  const bPos = buf(P), bNrm = buf(N), bTag = buf(T), bEdge = buf(E);
+
+  // ---- ground grid, one line per 100 mm -------------------------------
+  const gridSpan = Math.max(RAW.bbox.size[0], RAW.bbox.size[1]) * 3 + 0.4;
+  const step = 0.1, half = Math.ceil(gridSpan / step / 2) * step;
+  const gl_lines = [];
+  for (let v = -half; v <= half + 1e-9; v += step) {
+    gl_lines.push(-half, v, 0, half, v, 0, v, -half, 0, v, half, 0);
+  }
+  const bGrid = buf(new Float32Array(gl_lines));
+  const gridCount = gl_lines.length / 3;
+
+  // ---- camera ---------------------------------------------------------
+  const C = RAW.bbox.center, S = RAW.bbox.size;
+  const radius0 = Math.max(Math.hypot(S[0], S[1], S[2]), 0.05) * 1.35;
+  const cam = { th: -0.62, ph: 1.06, r: radius0, tx: C[0], ty: C[1], tz: C[2] };
+  const home = Object.assign({}, cam);
+
+  function eye() {
+    const sp = Math.sin(cam.ph), cp = Math.cos(cam.ph);
+    return [cam.tx + cam.r * sp * Math.cos(cam.th),
+            cam.ty + cam.r * sp * Math.sin(cam.th),
+            cam.tz + cam.r * cp];
+  }
+  function lookAt(e, c, up) {
+    let z = norm(sub(e, c)), x = norm(cross(up, z));
+    if (!isFinite(x[0])) x = norm(cross([0, 1, 0], z));
+    const y = cross(z, x);
+    return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0,
+            -dot(x, e), -dot(y, e), -dot(z, e), 1];
+  }
+  function persp(fovy, asp, near, far) {
+    const f = 1 / Math.tan(fovy / 2), d = near - far;
+    return [f / asp, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / d, -1,
+            0, 0, 2 * far * near / d, 0];
+  }
+  const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+  const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  function norm(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; }
+  function dirFrom(azDeg, elDeg) {
+    const a = azDeg * Math.PI / 180, e = elDeg * Math.PI / 180;
+    return norm([Math.cos(e) * Math.cos(a), Math.cos(e) * Math.sin(a), Math.sin(e)]);
+  }
+
+  // ---- interaction: full orbit, pan, zoom -----------------------------
+  let drag = null;
+  cv.addEventListener("pointerdown", (ev) => {
+    cv.setPointerCapture(ev.pointerId);
+    drag = { x: ev.clientX, y: ev.clientY,
+             pan: ev.button === 2 || ev.button === 1 || ev.shiftKey };
+    cv.classList.add("dragging");
+  });
+  cv.addEventListener("pointermove", (ev) => {
+    if (!drag) return;
+    const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+    drag.x = ev.clientX; drag.y = ev.clientY;
+    if (drag.pan) {
+      // Pan along the camera's own right/up, scaled so it tracks the cursor.
+      const e = eye(), f = norm(sub([cam.tx, cam.ty, cam.tz], e));
+      const rt = norm(cross(f, [0, 0, 1])), up = cross(rt, f);
+      const k = cam.r * 0.0022;
+      cam.tx += (-dx * rt[0] + dy * up[0]) * k;
+      cam.ty += (-dx * rt[1] + dy * up[1]) * k;
+      cam.tz += (-dx * rt[2] + dy * up[2]) * k;
+    } else {
+      cam.th -= dx * 0.0075;
+      // Clamped just shy of the poles: at exactly 0 or pi the up vector is
+      // parallel to the view direction and the basis collapses.
+      cam.ph = Math.min(Math.PI - 0.001, Math.max(0.001, cam.ph - dy * 0.0075));
+    }
+    draw();
+  });
+  function endDrag(ev) {
+    if (drag) { try { cv.releasePointerCapture(ev.pointerId); } catch (e) {} }
+    drag = null; cv.classList.remove("dragging");
+  }
+  cv.addEventListener("pointerup", endDrag);
+  cv.addEventListener("pointercancel", endDrag);
+  cv.addEventListener("contextmenu", (e) => e.preventDefault());
+  cv.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    cam.r = Math.min(radius0 * 12, Math.max(radius0 * 0.06,
+             cam.r * Math.exp(ev.deltaY * 0.0012)));
+    draw();
+  }, { passive: false });
+  cv.addEventListener("dblclick", () => { Object.assign(cam, home); draw(); });
+
+  // pinch zoom
+  const touches = new Map();
+  cv.addEventListener("touchstart", (e) => {
+    for (const t of e.changedTouches) touches.set(t.identifier, t);
+  });
+  cv.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      if (cv._pd) {
+        cam.r = Math.min(radius0 * 12, Math.max(radius0 * 0.06, cam.r * cv._pd / d));
+        draw();
+      }
+      cv._pd = d;
+    }
+  }, { passive: false });
+  cv.addEventListener("touchend", () => { cv._pd = 0; });
+
+  // ---- controls --------------------------------------------------------
+  const el = (id) => document.getElementById(id);
+  const state = { mode: 0, wire: false, grid: true };
+
+  const MODES = [["Material", 0], ["Tags", 1], ["Matte", 2], ["Normals", 3]];
+  MODES.forEach(([label, v]) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.setAttribute("aria-pressed", String(state.mode === v));
+    b.onclick = () => {
+      state.mode = v;
+      [...el("modes").children].forEach((c, i) =>
+        c.setAttribute("aria-pressed", String(MODES[i][1] === v)));
+      draw();
+    };
+    el("modes").appendChild(b);
+  });
+  [["Wireframe", "wire"], ["Grid", "grid"]].forEach(([label, key]) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.setAttribute("aria-pressed", String(state[key]));
+    b.onclick = () => { state[key] = !state[key];
+      b.setAttribute("aria-pressed", String(state[key])); draw(); };
+    el("toggles").appendChild(b);
+  });
+
+  const RIGS = {
+    "Studio":  { keyI: 100, keyA: 35, keyE: 38, fillI: 40, rimI: 55, ambI: 22, gloss: 30 },
+    "Single":  { keyI: 135, keyA: 28, keyE: 30, fillI: 6,  rimI: 0,  ambI: 8,  gloss: 22 },
+    "Top":     { keyI: 100, keyA: 0,  keyE: 82, fillI: 30, rimI: 20, ambI: 26, gloss: 18 },
+    "Flat":    { keyI: 0,   keyA: 0,  keyE: 0,  fillI: 0,  rimI: 0,  ambI: 100, gloss: 0 },
+    "Rim":     { keyI: 35,  keyA: 150,keyE: 12, fillI: 10, rimI: 150,ambI: 10, gloss: 55 },
+  };
+  Object.keys(RIGS).forEach((name) => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.onclick = () => {
+      const r = RIGS[name];
+      for (const k in r) { el(k).value = r[k]; }
+      [...el("rigs").children].forEach((c) =>
+        c.setAttribute("aria-pressed", String(c === b)));
+      syncLabels(); draw();
+    };
+    el("rigs").appendChild(b);
+  });
+  el("rigs").firstChild.setAttribute("aria-pressed", "true");
+
+  const SLIDERS = ["keyI", "keyA", "keyE", "fillI", "rimI", "ambI", "gloss"];
+  SLIDERS.forEach((id) => el(id).addEventListener("input", () => {
+    syncLabels(); draw();
+    [...el("rigs").children].forEach((c) => c.setAttribute("aria-pressed", "false"));
+  }));
+  function syncLabels() {
+    SLIDERS.forEach((id) => {
+      const v = +el(id).value;
+      el(id + "v").textContent = (id === "keyA" || id === "keyE")
+        ? v + "°" : Math.round(v) + "%";
+    });
+  }
+  syncLabels();
+
+  const VIEWS = { Front: [-Math.PI/2, Math.PI/2], Back: [Math.PI/2, Math.PI/2],
+                  Left: [Math.PI, Math.PI/2], Right: [0, Math.PI/2],
+                  Top: [-Math.PI/2, 0.02], Iso: [-0.62, 1.06] };
+  Object.keys(VIEWS).forEach((name) => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.onclick = () => {
+      cam.th = VIEWS[name][0]; cam.ph = VIEWS[name][1];
+      cam.r = radius0; cam.tx = C[0]; cam.ty = C[1]; cam.tz = C[2];
+      draw();
+    };
+    el("views").appendChild(b);
+  });
+
+  // ---- stats -----------------------------------------------------------
+  const fmt = (n) => n.toLocaleString("en-US");
+  function fillStats() {
+    const s = RAW.stats;
+    // Watertight is a state, so it reads as a pill rather than a number.
+    const wt = s.watertight
+      ? '<span class="pill ok">sealed</span>'
+      : '<span class="pill no">open</span>';
+    const rows = [
+      ["vertices", fmt(s.verts)],
+      ["triangles", fmt(s.tris)],
+      ["edges", fmt(s.edges)],
+      ["faces", fmt(s.faces)],
+      ["components", fmt(s.components)],
+      ["genus", fmt(s.genus)],
+      ["manifold", wt],
+      ["extent", s.size],
+      ["volume", s.volume],
+      ["area", s.area],
+    ];
+    el("stats").innerHTML = rows.map(([k, v]) =>
+      `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("");
+    el("parts").innerHTML = RAW.tags.map((t, i) => {
+      const c = RAW.cols[i].map((x) => Math.round(x * 255)).join(",");
+      return `<tr><td class="k"><span class="swatch" style="background:rgb(${c})"></span>${t}</td>`
+           + `<td class="v">${fmt(RAW.tagTris[i])}</td></tr>`;
+    }).join("");
+  }
+  fillStats();
+
+  // ---- draw ------------------------------------------------------------
+  const COLS = new Float32Array(RAW.cols.flat());          // material palette
+  const TAGC = new Float32Array(RAW.tagCols.flat());        // high-contrast hues
+  const GREY = new Float32Array(RAW.cols.map(() => [0.78, 0.78, 0.8]).flat());
+
+  /** A CSS colour token as linear-ish 0..1 RGB, with a fallback. */
+  function tok(name, fallback) {
+    const raw = getComputedStyle(document.documentElement)
+      .getPropertyValue(name).trim();
+    const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(raw);
+    if (!m) return fallback;
+    const n = parseInt(m[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(cv.clientWidth, 1), h = Math.max(cv.clientHeight, 1);
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    }
+  }
+
+  function draw() {
+    resize();
+    const e = eye();
+    const view = lookAt(e, [cam.tx, cam.ty, cam.tz], [0, 0, 1]);
+    const proj = persp(0.82, cv.width / cv.height, radius0 * 0.008, radius0 * 40);
+
+    gl.viewport(0, 0, cv.width, cv.height);
+    // Read the ground and rule straight from the tokens, so the canvas cannot
+    // drift out of step with the CSS when the theme flips.
+    const ground = tok("--iron", [0.098, 0.110, 0.118]);
+    const ruleCol = tok("--rule", [0.204, 0.231, 0.247]);
+    gl.clearColor(ground[0], ground[1], ground[2], 1);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    if (state.grid) {
+      gl.useProgram(pLine);
+      gl.uniformMatrix4fv(gl.getUniformLocation(pLine, "uProj"), false, proj);
+      gl.uniformMatrix4fv(gl.getUniformLocation(pLine, "uView"), false, view);
+      gl.uniform4f(gl.getUniformLocation(pLine, "uCol"),
+                   ruleCol[0], ruleCol[1], ruleCol[2], 1);
+      const a = gl.getAttribLocation(pLine, "aPos");
+      gl.bindBuffer(gl.ARRAY_BUFFER, bGrid);
+      gl.enableVertexAttribArray(a);
+      gl.vertexAttribPointer(a, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, gridCount);
+    }
+
+    gl.useProgram(pMesh);
+    const U = (n) => gl.getUniformLocation(pMesh, n);
+    gl.uniformMatrix4fv(U("uProj"), false, proj);
+    gl.uniformMatrix4fv(U("uView"), false, view);
+    gl.uniform3fv(U("uEye"), new Float32Array(e));
+    gl.uniform3fv(U("uKeyDir"), new Float32Array(dirFrom(+el("keyA").value, +el("keyE").value)));
+    gl.uniform3fv(U("uFillDir"), new Float32Array(dirFrom(+el("keyA").value + 150, 12)));
+    gl.uniform3fv(U("uRimDir"), new Float32Array(dirFrom(+el("keyA").value + 195, 40)));
+    gl.uniform1f(U("uKeyI"), +el("keyI").value / 100);
+    gl.uniform1f(U("uFillI"), +el("fillI").value / 100);
+    gl.uniform1f(U("uRimI"), +el("rimI").value / 100);
+    gl.uniform1f(U("uAmb"), +el("ambI").value / 100);
+    gl.uniform1f(U("uGloss"), +el("gloss").value / 100);
+    gl.uniform1f(U("uMode"), state.mode);
+    gl.uniform3fv(U("uTagCol"),
+      state.mode === 0 ? COLS : (state.mode === 1 ? TAGC : GREY));
+
+    for (const [name, b, size] of [["aPos", bPos, 3], ["aNrm", bNrm, 3], ["aTag", bTag, 1]]) {
+      const a = gl.getAttribLocation(pMesh, name);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.enableVertexAttribArray(a);
+      gl.vertexAttribPointer(a, size, gl.FLOAT, false, 0, 0);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, nVerts);
+
+    if (state.wire && E.length) {
+      gl.useProgram(pLine);
+      gl.uniformMatrix4fv(gl.getUniformLocation(pLine, "uProj"), false, proj);
+      gl.uniformMatrix4fv(gl.getUniformLocation(pLine, "uView"), false, view);
+      // Layout dye: the blue a machinist paints on before scribing.
+      const dye = tok("--dykem", [0.184, 0.498, 0.710]);
+      gl.uniform4f(gl.getUniformLocation(pLine, "uCol"), dye[0], dye[1], dye[2], 1);
+      const a = gl.getAttribLocation(pLine, "aPos");
+      gl.bindBuffer(gl.ARRAY_BUFFER, bEdge);
+      gl.enableVertexAttribArray(a);
+      gl.vertexAttribPointer(a, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, E.length / 3);
+    }
+  }
+
+  new ResizeObserver(draw).observe(cv);
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  if (mq.addEventListener) mq.addEventListener("change", draw);
+  new MutationObserver(draw).observe(document.documentElement,
+    { attributes: true, attributeFilter: ["data-theme"] });
+  draw();
+})();
+</script>
