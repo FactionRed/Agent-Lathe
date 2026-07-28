@@ -22,9 +22,33 @@ import shutil
 import sys
 from typing import Dict, List, Optional, Tuple
 
-REPO = "FactionRed/Agent-3D"
-REPO_URL = "https://github.com/%s" % REPO
-API_URL = "https://api.github.com/repos/%s" % REPO
+FALLBACK_REPO = "FactionRed/Agent-Lathe"
+
+
+def repo_slug() -> str:
+    """owner/name, read from the git remote when there is one.
+
+    Hardcoding this went stale the first time the project was renamed, and the
+    only symptom was a 404 that looked like the repo being private. The checkout
+    already knows where it came from, so ask it.
+    """
+    try:
+        import re
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        out = subprocess.run(
+            ["git", "-C", root, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL)
+        if out.returncode == 0:
+            m = re.search(r"github\.com[:/]+([^/]+/[^/\s]+?)(?:\.git)?\s*$",
+                          out.stdout.strip())
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return FALLBACK_REPO
 
 # name -> (import name, why it is needed, pip name)
 DEPS: Tuple[Tuple[str, str, str], ...] = (
@@ -84,15 +108,46 @@ def fetch_upstream(timeout: float = 6.0) -> Dict[str, object]:
     import urllib.error
     import urllib.request
 
+    slug = repo_slug()
+    repo_url = "https://github.com/%s" % slug
+
+    # Prefer the gh CLI when it is present and logged in. An unauthenticated API
+    # call cannot see a private repository at all -- it returns 404, which is
+    # indistinguishable from a wrong name. gh carries the user's own credentials
+    # and follows renames.
+    if shutil.which("gh"):
+        import subprocess
+        try:
+            out = subprocess.run(
+                ["gh", "api", "repos/%s" % slug], capture_output=True, text=True,
+                timeout=timeout + 6, stdin=subprocess.DEVNULL)
+            if out.returncode == 0:
+                data = json.loads(out.stdout)
+                return {
+                    "reachable": True,
+                    "via": "gh",
+                    "url": data.get("html_url") or repo_url,
+                    "slug": data.get("full_name") or slug,
+                    "private": bool(data.get("private")),
+                    "description": (data.get("description") or "")[:300],
+                    "default_branch": data.get("default_branch"),
+                    "pushed_at": data.get("pushed_at"),
+                    "stars": data.get("stargazers_count"),
+                    "open_issues": data.get("open_issues_count"),
+                }
+        except Exception:
+            pass  # fall through to the anonymous path
+
     try:
         req = urllib.request.Request(
-            API_URL, headers={"Accept": "application/vnd.github+json",
-                              "User-Agent": "lathe-setup"})
+            "https://api.github.com/repos/%s" % slug,
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "lathe-setup"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return {
             "reachable": True,
-            "url": REPO_URL,
+            "url": repo_url,
             "description": (data.get("description") or "")[:300],
             "default_branch": data.get("default_branch"),
             "pushed_at": data.get("pushed_at"),
@@ -109,11 +164,11 @@ def fetch_upstream(timeout: float = 6.0) -> Dict[str, object]:
                       "local is affected." % exc.code)
         else:
             reason = "HTTP %d" % exc.code
-        return {"reachable": False, "url": REPO_URL, "reason": reason}
+        return {"reachable": False, "url": repo_url, "reason": reason}
     except Exception as exc:
         return {
             "reachable": False,
-            "url": REPO_URL,
+            "url": repo_url,
             "reason": "%s: %s -- offline, or the host is unreachable. Nothing "
                       "local is affected." % (type(exc).__name__, exc),
         }

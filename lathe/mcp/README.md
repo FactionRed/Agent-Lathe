@@ -21,10 +21,26 @@ it. `LATHE_OUT` sets where sheets land (default `~/.lathe/out`).
 Check it directly first:
 
 ```bash
-python -m pytest lathe/mcp/tests -q        # 26 tests, no Blender needed
-python lathe/mcp/tests/smoke.py            # drives every tool
-python lathe/mcp/tests/smoke.py --render   # includes render and glb
+python -m pytest lathe/mcp/tests/test_session.py lathe/mcp/tests/test_welcome.py -q
+python lathe/mcp/tests/test_stdio.py            # spawns the server, speaks MCP
+python lathe/mcp/tests/test_stdio.py --render   # adds observe and compare
+python lathe/mcp/tests/smoke.py                 # drives the tools in-process
 ```
+
+`test_stdio.py` is the one that matters. Everything else exercises the Python
+functions; that one spawns the server and talks to it over the wire, which is
+where a whole class of bug lives. It caught the stdin one below.
+
+**Subprocesses must get `stdin=subprocess.DEVNULL`.** `capture_output=True`
+redirects stdout and stderr and leaves stdin inherited — so under this server
+a Blender child inherits the **JSON-RPC pipe**, holds the transport until its
+timeout, and can eat protocol bytes. It cost a 600-second stall per bevel and was
+completely invisible when calling the same functions directly. Fixed in
+`build/bevel.py`, `render/__init__.py` and `io/export.py`.
+
+Heavy work also runs off the event loop via `asyncio.to_thread`. A bevel takes
+about three seconds, and doing that on the loop makes the server unable to answer
+a ping or honour a cancellation for the duration.
 
 ## Tools
 

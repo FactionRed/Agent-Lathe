@@ -187,7 +187,10 @@ def _via_blender(solid: Solid, path: str, fmt: str, materials: Dict[str, str]) -
         json.dump(job, open(job_p, "w"))
         proc = subprocess.run(
             [exe, "-b", "--factory-startup", "-noaudio", "-P", _WORKER, "--", job_p],
-            capture_output=True, text=True, timeout=900)
+            capture_output=True, text=True, timeout=900,
+            # See bevel.py: without this the child inherits the MCP JSON-RPC
+            # stdin and blocks the transport.
+            stdin=subprocess.DEVNULL)
         if not os.path.exists(path):
             raise LatheError(
                 "%s export produced no file.\n--- stdout ---\n%s\n--- stderr ---\n%s"
