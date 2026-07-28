@@ -126,14 +126,26 @@ let final = bevel(carved, rim, width = bevel_w, segments = 2, harden_normals = t
 uv  final by angle_seams(threshold = 66deg, pack = square)
 mat oak on final.faces(all)
 
-emit "SM_Crate_Wood" {
+emit "SM_Crate_Wood" {                        # a stem, not a filename
   profile        : game_prop_pbr
   target         : unreal
-  lod            : auto(4)
+  lod            : auto(4)                    # fans out to _LOD0 .. _LOD3
   budget         : { tris_lod0: 1500 }
   texel_density  : 5.12 px/cm
 }
 ```
+
+**`emit` names a stem.** One `emit` produces a *set* of artifacts, and the emitter appends
+the suffixes. `lod: auto(4)` yields `SM_Crate_Wood_LOD0` through `_LOD3`; a texture set
+yields `T_Crate_Wood_D` and siblings. Naming rules therefore apply to the emitted artifact
+names, never to the stem — a stem carrying its own `_LOD0` would produce
+`SM_Crate_Wood_LOD0_LOD0`.
+
+This was underspecified in v0, and the first implementation of §7 read `lod` as *this
+asset's LOD index* rather than *how many to generate*. Both readings are defensible from
+the v0 text, which is the problem. Under the index reading, the verifier then reported the
+example above as violating N401 for the missing `_LOD0` — a false positive produced
+entirely by the ambiguity, in the one subsystem whose value depends on not emitting those.
 
 Notes on what is deliberately absent: no mode switches, no selection calls, no
 `transform_apply`. The program declares origin and scale, and the emitter must honor
@@ -185,11 +197,26 @@ faces leaked, and `preserve_all_data_layers` made no difference. Tags survive
 
 On Manifold, provenance is a **native feature and the better mechanism**. `reserve_ids`
 exists specifically to mark triangle sets that remain queryable after later operations.
-`run_original_id` attributes every output triangle to the input solid it came from, and
-`face_id` groups coplanar triangles into logical faces — which is what `seat.top_face()`
-needs. Three chained booleans kept all three ancestors exactly distinguishable. Prefer
-ID tracking over property channels: IDs are exact attribution, while property channels
-interpolate at new cut vertices and therefore inherit the drift problem below.
+`run_original_id` attributes every output triangle to the input solid it came from. Three
+chained booleans kept all three ancestors exactly distinguishable. Prefer ID tracking over
+property channels: IDs are exact attribution, while property channels interpolate at new
+cut vertices and therefore inherit the drift problem below.
+
+**`face_id` needs a composite key.** An earlier revision of this section claimed `face_id`
+groups coplanar triangles into logical faces, full stop. That is wrong in a way that
+matters. `face_id` is scoped **per original solid**, so values collide across solids:
+
+```
+run_original_id 3  ->  face_ids [0, 1, 2, 3, 5, 6]
+run_original_id 5  ->  face_ids [0, 2]            # 0 and 2 collide
+distinct face_id alone        : 6
+distinct (run_original_id, face_id) : 8
+```
+
+A selector keyed on `face_id` alone silently conflates faces from different source solids
+and under-counts. The logical face key is the pair `(run_original_id, face_id)`. Note the
+shape of this bug: a selector matching the wrong set with no error raised — the same class
+as the bevel drift, hiding inside the mechanism recommended to fix the bevel drift.
 
 **But inheritance is not free.** `bmesh` interpolates ancestor attributes onto newly
 created faces. After bevelling a cut edge, the new bevel faces carry `#cut_face` too, and
@@ -251,8 +278,20 @@ Add a real solver later, behind an explicit `solve { … }` block, if it earns i
 Ordered by cost. The system steers the agent toward cheap signals first, because renders
 are slow, ambiguous, and easy to over-trust.
 
-**Tier 1 — numeric probes (microseconds, text).** This is where most verification should
-happen.
+**Tier 1 — numeric probes (text).** This is where most verification should happen.
+
+Two cost classes inside this tier, and the distinction is measured, not assumed.
+Closed-form probes — `bbox`, `volume`, `center_of_mass`, `counts`, `is_watertight`,
+`surface_area` — run in **30–90 µs** on prop-sized meshes. `symmetry` needs kernel
+booleans and costs **0.8 ms on 20 triangles, 6–90 ms at production density**: three to four
+orders of magnitude more. An earlier revision filed the whole tier under "microseconds",
+which was wrong and would have mislead an agent budgeting a verification loop.
+
+**Every probe declares its method.** `symmetry` has an exact path (volumetric IoU, immune
+to tessellation, exactly 1.000 when symmetric) and a sampling fallback for open meshes
+whose score is a normalized deviation and is **not comparable** to an IoU. A bare number
+that silently means two different things is worse than no number, so the method and the
+mirror plane print alongside the score.
 
 ```
 measure(final.bbox)              → 0.600 × 0.600 × 0.600 m
@@ -262,7 +301,8 @@ volume(final)                    → 0.164 m³
 center_of_mass(final)            → (0, 0, 0.287)
 raycast(from = (0,-2,0.3), dir = +Y) → hit final #cut_face at 1.71 m
 is_watertight(final)             → true
-symmetry(final, plane = YZ)      → 0.998
+symmetry(final, plane = YZ)      → 0.875   method volume_iou (exact)
+                                           mirror x = 0.000 m (bbox_center)
 ```
 
 **Tier 2 — structural summaries (milliseconds, text).** Topology histograms, per-island
@@ -311,7 +351,7 @@ expression.
 | W204 | warn  | LOD chain missing a step, or reduction ratio off target |
 | W205 | warn  | Silhouette deviation between LOD*n* and LOD0 above threshold |
 | W302 | warn  | Texel density variance outside target ±10% |
-| N401 | note  | Naming does not match `[Prefix]_[Name]_[Variant]_[LOD]` |
+| N401 | note  | Emitted artifact name does not match `[Prefix]_[Name]_[Variant]_[LOD]` (see §4 — the rule reads emitted names, not the `emit` stem) |
 | N402 | note  | Dense topology in low-curvature, non-deforming regions |
 
 Additional profiles: `character_skinned` (adds edge-loop counts at joints, pole
@@ -404,10 +444,25 @@ the history model — all of which are headless.
 - **Geometry kernels:** [Manifold](https://github.com/elalish/manifold) for booleans —
   guaranteed-manifold output eliminates E101 by construction, which is worth a great deal.
   Its native ID tracking also carries §5.2 provenance for free, which settles the kernel
-  choice. It brings no bevel or fillet, so budget for that separately.
+  choice. It brings no bevel or fillet, so budget for that separately. Read geometry with
+  `to_mesh64()`, never `to_mesh()` — the latter silently returns float32, so a 600 mm cube
+  reads back as 600.000012 mm. The absolute error is negligible; the broken exact
+  comparison against a declared `600mm` is not.
   OpenVDB for SDF/implicit form-finding and smooth blends. Instant Meshes or QuadWild for
   quad remeshing. xatlas for UV packing. OpenCASCADE only if exact fillets and CAD
   interop become requirements — it is heavy and its boolean failures are opaque.
+- **Bevel and fillet:** bmesh behind a headless subprocess, with the §5.2 non-inheriting
+  tag default enforced in the wrapper rather than left to the caller. Chosen on measured
+  evidence over two alternatives. OCCT is the better bevel — exact radii, per-edge and
+  variable width, failures that name the offending contour — but it fillets a *feature
+  history*, not a mesh: it reports `IsDone` while emitting non-manifold garbage on a sewn
+  mesh, so adopting it means carrying a second kernel plus 626 MB of install. Defer it to a
+  Phase 4 CAD-interop decision. The implicit routes are out: every one collapses provenance
+  to a single `run_original_id`, Manifold exposes no signed-distance query so `level_set`
+  cannot round an arbitrary boolean result, and the smooth-min parameter is not a width —
+  it pulled a face 5.04 mm inward against a requested 20 mm. Manifold's Minkowski
+  `open`/`close` is worth keeping for single-curvature-sign rounding at ~1000 triangles in
+  0.2 s.
 - **Renderer:** headless wgpu for probes and matte/wireframe passes; Cycles via
   `blender -b` only for final beauty renders.
 - **Blender is a backend and a viewer, not the foundation.** Keep an exporter to `.blend`
@@ -468,7 +523,15 @@ basemesh + cage deformation for characters, USD export, baking pipeline, materia
 **Selector instability.** A query silently matching the wrong set is the most dangerous
 failure mode, because it is invisible. The prototype reproduced it on the second try: a
 bevel widened `faces(#cut_face)` from 2 matches to 10 without any error, because the
-kernel interpolated ancestor tags onto the new faces. Two mitigations, both now
+kernel interpolated ancestor tags onto the new faces.
+
+The bevel spike then measured it properly, against a geometric referee that recomputes
+provenance from plane geometry so no implementation grades itself. The drift is **bmesh's
+own default**, not a wrapper artifact: `faces(#cut_face)` goes 3 → 78 with 97 wrongly
+attributed triangles, and 184 new faces arrive already carrying ancestor masks and no
+`#bevel` tag at all. The §5.2 non-inheriting default holds at 3 — zero false positives,
+zero false negatives, zero untagged. The mitigation is validated in the kernel that will
+ship it. Two mitigations, both now
 load-bearing. First, tag inheritance is opt-in, not default (§5.2). Second, cardinality
 assertions (§5.3), enforced culturally — the tool should nag when a selector feeding a
 destructive op carries no assertion. Note that the assertion alone would **not** have
@@ -514,3 +577,16 @@ system adoptable before it is trusted.
    still earns its place.
 5. What is the minimum component library that makes assembly genuinely faster than
    generation?
+6. **One mesh type, and it must be polygonal.** §7 and §6 were built in parallel and each
+   independently chose a neutral mesh, then diverged: the verifier uses variable-length
+   faces, perception is triangles-only. The verifier's reasoning decides it — *E102 cannot
+   exist if the representation cannot hold an n-gon*. Both packages import together today,
+   so this is a scheduled refactor rather than a bug, but it should land before either
+   grows a third consumer.
+7. Does the bevel decision survive curved input? Every fixture in the spike is
+   axis-aligned planar boxes, because the geometric referee cannot grade a fillet on a
+   cylinder or revolve. That is exactly where OCCT fillets fail in practice and where
+   bmesh bevel looks worst, so the §11 choice rests on the easy case. Extend the referee
+   before trusting it further.
+8. Bevel currently costs 2.9 s, of which 2.5 s is Blender process startup. A persistent
+   worker is the obvious fix and is untested.
