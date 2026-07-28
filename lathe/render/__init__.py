@@ -75,7 +75,10 @@ def render(solid: Solid, out_path: str, views: Sequence[str] = DEFAULT_VIEWS,
 
         proc = subprocess.run(
             [exe, "-b", "--factory-startup", "-noaudio", "-P", _WORKER, "--", job_p],
-            capture_output=True, text=True, timeout=3600)
+            capture_output=True, text=True, timeout=3600,
+            # See bevel.py: without this the child inherits the MCP JSON-RPC
+            # stdin and blocks the transport.
+            stdin=subprocess.DEVNULL)
         made = [l for l in proc.stdout.splitlines() if l.startswith("LATHE_RENDERED")]
         if verbose:
             print("  rendered %d frames" % len(made))

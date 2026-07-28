@@ -104,7 +104,12 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
         proc = subprocess.run(
             [exe, "-b", "--factory-startup", "-noaudio", "-P", _WORKER,
              "--", in_p, out_p, par_p],
-            capture_output=True, text=True, timeout=600)
+            capture_output=True, text=True, timeout=600,
+            # stdin=DEVNULL is not optional. capture_output only redirects
+            # stdout and stderr, so a child would inherit *our* stdin -- and
+            # under the MCP server that is the JSON-RPC pipe. Blender then holds
+            # the transport until its timeout, and may eat protocol bytes.
+            stdin=subprocess.DEVNULL)
         if not os.path.exists(out_p):
             raise LatheError(
                 "bevel worker produced no output.\n--- stdout ---\n%s\n--- stderr ---\n%s"

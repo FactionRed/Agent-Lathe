@@ -15,6 +15,7 @@ Run:  python -m lathe.mcp.server
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -67,6 +68,16 @@ def _check(ref: Optional[str], profile: Optional[str] = None) -> str:
     asset = vmesh.Asset(
         mesh=vmesh.from_manifold(solid.man, name=solid.name), spec=spec)
     return str(vengine.check(asset, profile)).rstrip()
+
+
+async def _off_loop(fn, *args, **kw):
+    """Run blocking work in a thread.
+
+    Booleans, bevels and renders take seconds. Doing that on the event loop makes
+    the server deaf for the duration -- it cannot answer a ping or honour a
+    cancellation while a Blender subprocess runs.
+    """
+    return await asyncio.to_thread(lambda: fn(*args, **kw))
 
 
 def _headline(solid, commit) -> str:
@@ -165,8 +176,8 @@ async def lathe_apply(params: ApplyInput) -> str:
         server whose caller could already run Python. Do not expose it remotely.
     """
     try:
-        commit, solid, diff, is_new = WS.apply(
-            params.program, params.message, params.branch)
+        commit, solid, diff, is_new = await _off_loop(
+            WS.apply, params.program, params.message, params.branch)
     except Exception as exc:
         return _fail(exc)
 
@@ -313,10 +324,11 @@ async def lathe_observe(params: ObserveInput) -> Any:
         commit = WS.commit(params.ref)
         os.makedirs(OUT_DIR, exist_ok=True)
         dest = os.path.join(OUT_DIR, "%s_%s.png" % (commit.id, params.mode.value))
-        sheets = render(
-            solid, dest, views=tuple(params.views), modes=(params.mode.value,),
-            materials=params.materials or {}, size=params.size,
-            samples=params.samples, label="%s  %s" % (solid.name, commit.id))
+        sheets = await _off_loop(
+            render, solid, dest, views=tuple(params.views),
+            modes=(params.mode.value,), materials=params.materials or {},
+            size=params.size, samples=params.samples,
+            label="%s  %s" % (solid.name, commit.id))
         path = sheets.get(params.mode.value)
         if not path or not os.path.exists(path):
             return "ERROR\n  render produced no sheet for mode %r" % params.mode.value
@@ -424,8 +436,9 @@ async def lathe_export(params: ExportInput) -> str:
         if fmt not in FORMATS:
             return ("ERROR\n  unknown format %r. Supported: %s."
                     % (fmt, ", ".join(FORMATS)))
-        info = do_export(WS.solid(params.ref), params.path,
-                         materials=params.materials, origin=params.origin)
+        info = await _off_loop(
+            do_export, WS.solid(params.ref), params.path,
+            materials=params.materials, origin=params.origin)
         return json.dumps(info, indent=2)
     except Exception as exc:
         return _fail(exc)
@@ -589,10 +602,10 @@ async def lathe_compare(params: CompareInput) -> Any:
                 solid, commit = WS.solid(ref), WS.commit(ref)
                 one = os.path.join(tmp, "%s.png" % commit.id)
                 # sheet=False: raw frames, so the grid below is the only grid.
-                got = render(
-                    solid, one, views=(params.view,), modes=(params.mode.value,),
-                    materials=params.materials or {}, size=params.size,
-                    samples=params.samples, sheet=False)
+                got = await _off_loop(
+                    render, solid, one, views=(params.view,),
+                    modes=(params.mode.value,), materials=params.materials or {},
+                    size=params.size, samples=params.samples, sheet=False)
                 frames = got.get(params.mode.value) or []
                 for _view, src in frames:
                     if os.path.exists(src):
@@ -736,7 +749,6 @@ async def lathe_setup(params: SetupInput) -> str:
             return "\n".join(out)
 
         out.append("installing (confirmed)...")
-        import asyncio
         import subprocess
         args = [sys.executable, "-m", "pip", "install"] + [
             d["pip"] for d in a["missing"]]
@@ -772,8 +784,9 @@ async def lathe_setup(params: SetupInput) -> str:
         return "\n".join(out + ["", "ERROR", "  %s" % exc])
 
     try:
-        commit, solid, _diff, _new = WS.apply(
-            w["program"], "welcome piece (%s, seed %s)" % (w["style"], w["seed_label"]),
+        commit, solid, _diff, _new = await _off_loop(
+            WS.apply, w["program"],
+            "welcome piece (%s, seed %s)" % (w["style"], w["seed_label"]),
             branch="welcome")
     except Exception as exc:
         return "\n".join(out + ["", "the welcome program failed to build:", "",
