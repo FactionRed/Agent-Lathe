@@ -721,13 +721,15 @@ async def lathe_setup(params: SetupInput) -> str:
     if params.check_upstream:
         up = welcome.fetch_upstream()
         if up.get("reachable"):
-            out.append("project   %s" % up["url"])
+            out.append("project   %s%s"
+                       % (up["url"], "   (private)" if up.get("private") else ""))
             if up.get("description"):
                 out.append("          %s" % up["description"])
             out.append("          branch %s   last push %s   %s stars   %s open issues"
                        % (up.get("default_branch"), up.get("pushed_at"),
                           up.get("stars"), up.get("open_issues")))
-            out.append("          this is a local checkout; `git pull` updates it")
+            out.append("          read via %s. This is a local checkout, so "
+                       "`git pull` updates it." % up.get("via", "the public API"))
         else:
             out.append("project   %s (not reachable: %s)"
                        % (up["url"], up.get("reason", "")))
