@@ -251,7 +251,18 @@ assert unique(seat.top_face())
 ```
 
 Changing `slat_n` from 5 to 7 changes the edge count, the assertion fires, and the agent
-is told *exactly* which assumption its edit broke. Cheap to write, and it converts a
+is told *exactly* which assumption its edit broke.
+
+**Assert logical faces on planar geometry only.** A logical face count is stable under
+retessellation for flat faces and *not* for curved ones. `face_id` groups coplanar
+triangles, so a 64-segment revolve reports one facet per segment — building the bowl in
+`models/` produced 322 where the program asserted 1. On curved surfaces the count is a
+function of segment count, so assert the invariants that actually hold instead: volume,
+watertightness, component count, bounding box.
+
+Two of the three test assets tripped a cardinality assertion on their first run, and both
+times the assertion was right and the author's expectation was wrong. That is the mechanism
+working. Cheap to write, and it converts a
 class of silent corruption into a loud, localized error. Assertions should be
 strongly encouraged by the tool's error messages and emitted by default in agent
 scaffolding.
@@ -541,6 +552,12 @@ Defaults do the real work here.
 **Topology quality ceiling.** SDF and boolean output does not have artist edge flow. This
 caps the system at static-prop grade until remeshing matures. Accept the cap, state it,
 and do not sell character work in Phase 1–4.
+
+**Coincident contact is not connection.** Two solids meeting exactly on a shared plane come
+back as separate components, because the contact has measure zero. The villager's boots met
+its shins precisely on z=0.075 and the figure assembled in four pieces. Assembly helpers
+should overlap deliberately rather than abut, and the E108 component check is what catches
+it — which is the second time that rule has earned its place.
 
 **Boolean fragility shrinks, but does not vanish.** Manifold removes non-manifold output.
 It does not remove coincident-face degeneracy or the need to think about cut placement.
