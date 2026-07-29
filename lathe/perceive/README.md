@@ -70,6 +70,23 @@ report broken geometry, so it cannot rest on a type that refuses to hold it.
 prints which path ran. An agent over-trusts exactly those numbers whose provenance it cannot
 see.
 
+**The console cannot fail the build.** Probe text is UTF-8 — `→`, `×`, `m³` — because it
+reaches the agent over MCP, where that is the better form. A default Windows console is
+cp1252, and printing one `→` there raises `UnicodeEncodeError`: a build gate lost to a
+formatting choice. So `Probe.text()`, `Summary.text()` and both `report()` functions fold to
+ASCII when `sys.stdout` cannot encode the glyphs, exactly as `verify.Report` does:
+
+```python
+print(tier1.report(mesh))                  # asks stdout, folds if it must
+tier1.report(mesh, ascii_only=False)       # UTF-8 whatever the console is (MCP)
+tier1.report(mesh, ascii_only=True)        # ASCII whatever the console is
+```
+
+The fold is all or nothing — cp1252 can take `×` but not `→`, and half-folded output reads
+worse than either form. `lines()` is unaffected: it is the structural accessor, and the
+values a caller parses must not change with where stdout happens to point. Every glyph the
+layer emits has an entry in `fmt._ASCII_MAP`, and `test_console.py` fails if one does not.
+
 ---
 
 # Tier 1 — numeric probes

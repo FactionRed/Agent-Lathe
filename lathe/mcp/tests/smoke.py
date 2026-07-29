@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from lathe.mcp import server as S  # noqa: E402
+from lathe.perceive import fmt  # noqa: E402
 
 STEP1 = '''
 seat  = box(0.42, 0.40, mm(35), tag="seat", name="SM_Stool_Oak_LOD0").at(z=0.4325)
@@ -44,7 +45,11 @@ def show(title, body):
     print(title)
     print("=" * 74)
     text = body if isinstance(body, str) else "<%s>" % type(body).__name__
-    print(text if len(text) < 2600 else text[:2600] + "\n  ... truncated")
+    if len(text) >= 2600:
+        text = text[:2600] + "\n  ... truncated"
+    # The tools answer in UTF-8 because that is what MCP carries. This script
+    # is the one place that output meets a console, which on Windows is cp1252.
+    print(fmt.for_stdout(text))
 
 
 async def main():
