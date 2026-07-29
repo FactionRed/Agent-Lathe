@@ -346,8 +346,9 @@ class CheckInput(BaseModel):
 
     profile: Optional[str] = Field(
         default=None,
-        description=("Rule profile: game_prop_pbr, character_skinned or mobile_vr. "
-                     "Defaults to whatever the program's `spec` declared."))
+        description=("Rule profile: game_prop_pbr, character_skinned, mobile_vr, "
+                     "hard_surface_subdiv or film_usd. Defaults to whatever the "
+                     "program's `spec` declared."))
     ref: Optional[str] = Field(default=None, description="Commit or branch. Default HEAD.")
 
 
@@ -377,6 +378,8 @@ async def lathe_check(params: CheckInput) -> str:
     Examples:
         - "is this game-ready?" -> defaults
         - "would this pass for a character?" -> profile='character_skinned'
+        - "this is a subdiv cage" -> profile='hard_surface_subdiv'
+        - "this is going to a film pipeline" -> profile='film_usd'
         - Don't use to measure -- that is lathe_query.
     """
     try:

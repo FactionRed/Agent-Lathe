@@ -45,7 +45,8 @@ reasons rather than prompt-quality ones.
 
 - Authoring kernel: primitives, booleans, revolve, extrude, arrays, transforms.
 - Bevel through headless bmesh, with the non-inheriting tag default enforced in the wrapper.
-- Verifier: E101–E108 plus W201, W202, W203, W302, N401, across three profiles.
+- Verifier: E101–E108 plus W201, W202, W203, W302, N401, across all five §7 profiles —
+  `game_prop_pbr`, `character_skinned`, `mobile_vr`, `hard_surface_subdiv`, `film_usd`.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
@@ -58,7 +59,7 @@ reasons rather than prompt-quality ones.
   compare and export without anyone writing Python. See [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 304 tests pass. Checked against closed-form truth, not smoke.
+- 315 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 
@@ -90,7 +91,7 @@ Needs Python 3.12, `manifold3d`, `numpy`, `Pillow`, and Blender 5.2 for bevel an
 pip install manifold3d numpy pillow
 python models/build_all.py               # build, verify, probe and render all three
 python models/build_all.py --no-render   # skip Blender, keep the checks
-python -m lathe.verify.tests             # 92 tests
+python -m lathe.verify.tests             # 103 tests
 python -m pytest lathe/perceive/tests -q # 172 tests
 ```
 
