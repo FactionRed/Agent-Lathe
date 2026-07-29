@@ -78,8 +78,22 @@ Five profiles ship — every one §7 names.
 | `game_prop_pbr` | The §7 table as written. The baseline the other four are stated against |
 | `character_skinned` | Tightens origin and transform tolerance, loosens texel density, downgrades E108 to a warning. Faces get more texels on purpose, which is why the density band widens |
 | `mobile_vr` | Allows open shells for foliage cards, needs triangles rather than quads, and grades texel density and NPOT textures as errors |
-| `hard_surface_subdiv` | The emitted faces are a subdivision cage, not the shipped surface. Quads stay mandatory — Catmull-Clark turns a non-quad into a visible pinch. Transform tolerance tightens, because a subdiv modifier evaluates in object space and an unapplied scale changes the resulting surface rather than only its interpretation. `min_face_area` rises, because a sliver that would vanish in a dense mesh is a pinch in a cage. Texel density drops to a note: it is measured on the cage and the renderer shades the limit surface, so the number is real and the gate would be wrong |
+| `hard_surface_subdiv` | The emitted faces are a subdivision cage, not the shipped surface. Quads stay mandatory in **both directions** — `min_face_verts: 4` as well as `max_face_verts: 4`, because Catmull-Clark turns a non-quad into a visible pinch and a triangle is the non-quad that actually turns up. Transform tolerance tightens, because a subdiv modifier evaluates in object space and an unapplied scale changes the resulting surface rather than only its interpretation. `min_face_area` rises, because a sliver that would vanish in a dense mesh is a pinch in a cage. Texel density drops to a note: it is measured on the cage and the renderer shades the limit surface, so the number is real and the gate would be wrong |
 | `film_usd` | An offline renderer reads this, not an engine importer. It dices and subdivides at render time, so n-gons become a note. USD composes xformOps onto the prim and preserves them exactly, so E104 becomes a warning rather than the silent FBX bug. Open shells are legal, the density band widens for per-tile UDIM authoring, and NPOT is an observation because a film texture system mips arbitrary dimensions |
+
+**`hard_surface_subdiv` currently rejects everything this project can build, and
+that is the correct answer.** Manifold emits triangles, so a Lathe asset is a
+triangle mesh, and a triangle mesh is not a subdivision cage. Until there is a quad
+output path the profile is a contract nothing here satisfies — which is worth
+stating loudly rather than passing quietly.
+
+It *did* pass quietly. With only an upper bound of 4 verts a triangle satisfied
+E102, so the profile returned an affirmative PASS on a fully triangulated cage:
+not a skip, a pass, on the exact input its own comment calls a bug. The only test
+covering it used a 6-gon, so it checked the bound that worked. A maximum alone
+cannot express "quads" — `max = 3` happens to mean triangles-only, which is why
+`mobile_vr` read correctly by accident, and `max = 4` admits triangles as readily
+as quads. `min_face_verts` defaults to 3, so no other profile changed.
 
 `film_usd` is the only profile that drops a rule rather than re-grading it:
 film does not budget triangles, so **E107 is not selected at all**. That is

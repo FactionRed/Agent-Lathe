@@ -12,4 +12,24 @@ Three files, three claims:
                   in JSON, for every finding the suite can produce
   test_engine.py  rules are data: profiles select, parametrise and re-grade
                   them, and a new profile needs no engine change
+
+The registry is loaded here, at import, and that is not decoration.
+
+`RULES` is populated lazily -- `check`, `run` and `rule_table` each call
+`load_rules()` themselves, so the public surface is fine, but a bare
+`import lathe.verify` leaves the dict empty. The suite used to depend on
+`TestRegistry.test_rules_are_registered_by_import` calling `load_rules()` and
+mutating the shared dict in place, which meant every other test needed that one
+to have run first.
+
+It worked under `unittest`, by luck: unittest sorts class names, and `TestRegistry`
+sorts sixth while four classes that call `run()` sort ahead of it and populate the
+registry as a side effect. `pytest` preserves *definition* order, where
+`TestRegistry` is first -- so it asserted against an empty registry and 241 tests
+failed in cascade. The suite passed one way and collapsed the other, having never
+been run the second way.
 """
+
+from ..engine import load_rules
+
+load_rules()

@@ -18,7 +18,6 @@ from ..engine import (
     Profile,
     RuleNotApplicable,
     get_profile,
-    load_rules,
     register_profile,
     rule,
     rule_table,
@@ -29,10 +28,23 @@ from ..findings import ERROR, NOTE, WARN
 
 class TestRegistry(unittest.TestCase):
     def test_rules_are_registered_by_import(self):
-        load_rules()
-        for code in ("E101", "E102", "E103", "E104", "E105", "E106", "E107", "E108",
-                     "W201", "W202", "W203", "W302", "N401"):
-            self.assertIn(code, RULES)
+        """No `load_rules()` call here, deliberately.
+
+        This test used to call it, and every other test in the suite silently
+        depended on that -- it passed under unittest only because class names sort
+        `TestRegistry` after four classes that populate the registry as a side
+        effect of calling `run()`. Under pytest, which keeps definition order, this
+        class runs first and 241 tests failed in cascade. The package `__init__`
+        loads the registry now, so this asserts the guarantee instead of creating
+        it, and fails if that ever regresses.
+
+        Asserted as an equality, not a series of `assertIn`: a missing code is the
+        failure this catches, and W206 was absent from the old list.
+        """
+        self.assertEqual(
+            set(RULES),
+            {"E101", "E102", "E103", "E104", "E105", "E106", "E107", "E108",
+             "W201", "W202", "W203", "W206", "W302", "N401"})
 
     def test_every_rule_has_a_title_and_a_docstring(self):
         for code, spec in RULES.items():
@@ -222,6 +234,41 @@ class TestSubdivProfile(unittest.TestCase):
         report = run(fixtures.ngon_prism(), "hard_surface_subdiv")
         self.assertEqual(report.one("E102").severity, ERROR)
         self.assertFalse(report.passed)
+
+    def test_a_triangulated_cage_is_an_error_too(self):
+        """The other half of "a cage is quads", and the half that was missing.
+
+        `max_face_verts: 4` bounds only the top, so a triangle satisfied it and
+        this profile returned an affirmative PASS on a fully triangulated cage --
+        not a skip, a pass, on the exact input its own comment calls a bug. A
+        triangle is also the non-quad that actually turns up: it is what every
+        triangle kernel emits, including this project's.
+        """
+        tri = fixtures.clean_prop()
+        # Split each quad on a diagonal, keeping the same surface.
+        faces = []
+        for f in tri.mesh.faces:
+            if len(f) == 4:
+                faces += [(f[0], f[1], f[2]), (f[0], f[2], f[3])]
+            else:
+                faces.append(f)
+        tri = fixtures.Asset(tri.mesh.evolve(faces=tuple(faces), uv_sets={}),
+                             tri.spec)
+        self.assertNotIn("E102", run(tri, "game_prop_pbr").codes)
+        report = run(tri, "hard_surface_subdiv")
+        self.assertEqual(report.one("E102").severity, ERROR)
+        self.assertIn("under 4 verts", report.one("E102").summary)
+        self.assertFalse(report.passed)
+
+    def test_the_lower_bound_defaults_to_a_no_op(self):
+        """min_face_verts is new, so every profile that does not ask for it must
+        behave exactly as before. A triangulated mesh is the deliverable for four
+        of the five profiles."""
+        for name in sorted(set(PROFILES) - {"hard_surface_subdiv"}):
+            with self.subTest(profile=name):
+                self.assertEqual(
+                    get_profile(name).params.get("E102", {}).get("min_face_verts", 3),
+                    3)
 
     def test_an_unapplied_transform_is_graded_more_tightly_than_a_prop(self):
         """A subdivision modifier evaluates in object space, so the transform

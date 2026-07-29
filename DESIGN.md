@@ -665,6 +665,22 @@ hard to explain to an agent.
 more reliable. Mitigate in tool descriptions and by making Tier 1 output genuinely
 excellent.
 
+**A rule with only one bound cannot state a two-sided contract.** `hard_surface_subdiv`
+documented "a cage is quads or it is a bug" and enforced it with `max_face_verts: 4`, which
+admits a triangle as readily as a quad. So it returned an affirmative PASS on a fully
+triangulated cage — not a skip, a pass, on the exact input its own comment names as the bug.
+The single test covering it used a 6-gon, so it exercised the bound that worked.
+
+Two things made it survive review. `max = 3` *does* express "triangles only", so `mobile_vr`
+reads correctly and the parameter looks expressive enough. And the failure mode is a false
+pass, which no amount of running the suite surfaces — a green report is what you expect.
+E102 has a `min_face_verts` now, defaulting to 3 so nothing else moved.
+
+The consequence is worth stating: since Manifold emits triangles, **no asset this project can
+currently build satisfies `hard_surface_subdiv`**. That is the correct answer, and it was
+hidden by the missing bound. A profile that passes everything is indistinguishable from a
+profile that checks nothing, and this one was closer to the second than anyone believed.
+
 **A clean textual merge can still be a semantic conflict.** W206 and the two newest profiles
 (`hard_surface_subdiv`, `film_usd`) were written on separate branches. Both touched
 `profiles.py`, in different places, so git merged them without a murmur — and the result was
@@ -684,6 +700,21 @@ it — so the next rule or profile added on a branch cannot reopen the gap. That
 rule set that grows on one axis while profiles grow on another needs structural tests over the
 cross product, not per-item tests on each side. §7's claim that "a new profile is data" holds,
 but data still has invariants.
+
+**A test suite that runs one way and collapses the other has never been run the other way.**
+`RULES` is populated lazily, and the verifier suite depended on
+`TestRegistry.test_rules_are_registered_by_import` calling `load_rules()` and mutating the
+shared dict in place — so every other test needed that one to have run first. Under `unittest`
+it passes, by luck: class names sort alphabetically, `TestRegistry` sorts sixth, and four
+classes ahead of it call `run()` and populate the registry as a side effect. `pytest` keeps
+*definition* order, where `TestRegistry` is first. 241 tests then fail in cascade against an
+empty registry.
+
+Nothing was wrong with the tests or the engine. The suite simply had an initialisation order it
+never declared, and one runner happened to satisfy it. Loading the registry in the test
+package's `__init__` fixes it, and the test that used to create the guarantee now asserts it
+instead — where it also turned out to be checking 13 of the 14 rules, having never been updated
+for W206.
 
 **Reading a file is a new trust boundary, and it arrived late.** Everything before import
 consumed only what this system generated. A `.glb` from a marketplace is attacker-controlled
