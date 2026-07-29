@@ -2,10 +2,10 @@
 Lathe DESIGN.md section 7 -- the rule engine.
 
 Requirement: rules are data, not control flow. Section 7 says "rules are grouped
-into profiles selected by `emit`", and additional profiles (`character_skinned`,
-`hard_surface_subdiv`, `film_usd`, `mobile_vr`) are listed as future work. If
-adding one of those meant editing the engine, the engine would be an if-chain
-wearing a hat.
+into profiles selected by `emit`", and lists four additional profiles
+(`character_skinned`, `hard_surface_subdiv`, `film_usd`, `mobile_vr`). If adding
+one of those meant editing the engine, the engine would be an if-chain wearing a
+hat. All four exist now, and this module never learned any of their names.
 
 The shape:
 
