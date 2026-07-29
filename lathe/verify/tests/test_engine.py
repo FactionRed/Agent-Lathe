@@ -21,6 +21,7 @@ from ..engine import (
     load_rules,
     register_profile,
     rule,
+    rule_table,
     run,
 )
 from ..findings import ERROR, NOTE, WARN
@@ -56,9 +57,37 @@ class TestRegistry(unittest.TestCase):
                 return ()
 
     def test_registered_profiles(self):
+        """Every profile section 7 names, and nothing invented beyond them."""
         self.assertEqual(
-            sorted(PROFILES), ["character_skinned", "game_prop_pbr", "mobile_vr"]
+            sorted(PROFILES),
+            [
+                "character_skinned",
+                "film_usd",
+                "game_prop_pbr",
+                "hard_surface_subdiv",
+                "mobile_vr",
+            ],
         )
+
+    def test_every_profile_describes_itself(self):
+        """A profile is a policy. One that cannot say what it is for cannot be
+        chosen on purpose."""
+        for name, prof in PROFILES.items():
+            with self.subTest(profile=name):
+                self.assertGreater(len(prof.description), 40)
+
+    def test_quad_profiles_grade_the_clean_prop_as_a_pass(self):
+        """The clean fixture is a watertight quad mesh at the declared density.
+        Every profile that accepts quads must pass it; a new profile that fails
+        it is asserting something the fixture never promised.
+
+        `mobile_vr` is excluded on purpose -- it demands triangles, so the
+        quads are a genuine finding there. See test_rules.
+        """
+        for name in sorted(set(PROFILES) - {"mobile_vr"}):
+            with self.subTest(profile=name):
+                report = run(fixtures.clean_prop(), name)
+                self.assertTrue(report.passed, report.render(ascii_only=True))
 
     def test_profiles_only_select_registered_rules(self):
         for name, prof in PROFILES.items():
@@ -146,6 +175,34 @@ class TestProfileSelection(unittest.TestCase):
         )
         self.assertNotIn("E101", report.codes)
 
+    def test_every_profile_checking_uv_checks_all_of_it(self):
+        """E106, W202 and W206 partition UV layout defects between them.
+
+        rules/uv.py divides the space explicitly: E106 owns islands that
+        intersect, W202 owns islands merely too close, W206 owns UV area that has
+        collapsed. A profile that selects two thirds of a partition has a hole in
+        it, and the hole is invisible -- a collapsed island simply goes unreported
+        and the profile still says PASS.
+
+        This is a real defect that reached main, not a hypothetical. W206 and the
+        two newest profiles were written on separate branches; git merged both
+        cleanly because they touch different lines, and the *combination* was
+        incomplete in a way neither side could have caught. A structural
+        invariant is the only thing that catches that class of gap, so it is
+        asserted over every registered profile rather than per profile.
+        """
+        partition = {"E106", "W202", "W206"}
+        for name in sorted(PROFILES):
+            codes = {r.code for r in rule_table(name)}
+            present = codes & partition
+            if not present:
+                continue  # a profile may legitimately ignore UVs entirely
+            self.assertEqual(
+                present, partition,
+                "profile %r selects %s but not %s -- UV defects are partitioned "
+                "between all three, so the missing code is a silent hole"
+                % (name, sorted(present), sorted(partition - present)))
+
     def test_character_profile_tightens_origin_tolerance(self):
         asset = fixtures.clean_solid()
         nudged = fixtures.Asset(
@@ -154,6 +211,76 @@ class TestProfileSelection(unittest.TestCase):
         )
         self.assertNotIn("W201", run(nudged, "game_prop_pbr").codes)  # 0.5 mm < 1 mm
         self.assertIn("W201", run(nudged, "character_skinned").codes)  # > 0.1 mm
+
+
+class TestSubdivProfile(unittest.TestCase):
+    """`hard_surface_subdiv`: the emitted faces are a cage, not the surface."""
+
+    def test_an_ngon_cage_is_still_an_error(self):
+        """Catmull-Clark on a 6-gon cap is an extraordinary vertex and a visible
+        pinch, so the quad limit is not relaxed the way film relaxes it."""
+        report = run(fixtures.ngon_prism(), "hard_surface_subdiv")
+        self.assertEqual(report.one("E102").severity, ERROR)
+        self.assertFalse(report.passed)
+
+    def test_an_unapplied_transform_is_graded_more_tightly_than_a_prop(self):
+        """A subdivision modifier evaluates in object space, so the transform
+        changes the resulting surface rather than only its interpretation."""
+        asset = fixtures.clean_solid()
+        skewed = fixtures.Asset(
+            asset.mesh.evolve(
+                transform=fixtures.Transform(scale=(1.0, 1.0, 1.0 + 1e-7))
+            ),
+            fixtures.solid_spec(),
+        )
+        self.assertNotIn("E104", run(skewed, "game_prop_pbr").codes)  # 1e-7 < 1e-6
+        self.assertIn("E104", run(skewed, "hard_surface_subdiv").codes)  # > 1e-9
+
+    def test_texel_density_is_reported_but_does_not_block(self):
+        """Density is measured on the cage and the renderer shades the limit
+        surface, so the number is real and the gate would be wrong."""
+        report = run(fixtures.texel_variance(), "hard_surface_subdiv")
+        self.assertEqual(report.one("W302").severity, NOTE)
+        self.assertTrue(report.passed)
+
+
+class TestFilmProfile(unittest.TestCase):
+    """`film_usd`: an offline renderer, not an engine importer, reads this."""
+
+    def test_ngons_are_reported_as_a_note_not_an_error(self):
+        report = run(fixtures.ngon_prism(), "film_usd")
+        self.assertEqual(report.one("E102").severity, NOTE)
+        self.assertTrue(report.passed)
+
+    def test_an_unapplied_transform_warns_because_usd_preserves_it(self):
+        """The section 1 complaint is still worth naming, but a composed
+        xformOp survives as authored, so it is not the silent FBX bug."""
+        report = run(fixtures.unapplied_transform(), "film_usd")
+        self.assertEqual(report.one("E104").severity, WARN)
+        self.assertTrue(report.passed)
+
+    def test_open_shells_are_legal_as_they_are_on_mobile(self):
+        """Cards, cloth and hair meshes are open by design."""
+        self.assertNotIn("E101", run(fixtures.open_shell(), "film_usd").codes)
+
+    def test_npot_textures_are_an_observation(self):
+        report = run(fixtures.npot_textures(), "film_usd")
+        self.assertEqual(report.one("W203").severity, NOTE)
+
+    def test_no_triangle_budget_is_selected_at_all(self):
+        """Film does not budget triangles. E107 is absent rather than parked in
+        the *not checked* list, where it would nag forever about a declaration
+        this pipeline is never going to make."""
+        report = run(fixtures.over_budget(), "film_usd")
+        self.assertNotIn("E107", report.codes)
+        self.assertNotIn("E107", [s.code for s in report.skipped])
+
+    def test_udim_texture_names_are_not_held_to_the_mesh_convention(self):
+        """`T_Crate_Wood_D` passes either way; the point is that the object name
+        is still checked while the texture segments are not."""
+        report = run(fixtures.bad_name(), "film_usd")
+        self.assertEqual([f.entity for f in report.findings if f.code == "N401"],
+                         ["crate_final"])
 
 
 class TestContextAndCaching(unittest.TestCase):

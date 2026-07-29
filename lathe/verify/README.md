@@ -1,12 +1,12 @@
 # Verification subsystem — DESIGN.md section 7
 
-**Status:** working. 13 rules, 3 profiles, 92 tests, 21 fixtures. Headless.
+**Status:** working. 13 rules, 5 profiles, 103 tests, 21 fixtures. Headless.
 
 > Convert taste into assertions. An agent cannot have judgment, but it can
 > satisfy a spec. — [DESIGN.md](../../DESIGN.md) §7
 
 ```bash
-python lathe/verify/tests/run.py            # 92 tests, ~5 s
+python lathe/verify/tests/run.py            # 103 tests, ~5 s
 python -m lathe.verify                      # every fixture, one report each
 python -m lathe.verify severed_crate        # one asset
 python -m lathe.verify --json clean_prop    # the machine form
@@ -71,12 +71,24 @@ Rule parameters live in the profile, not in the rule body:
 | W302 | `tolerance_pct=10.0` |
 | N401 | `object_segments`, `texture_segments`, `default_prefix="SM"`, `check_textures=True` |
 
-Three profiles ship. `character_skinned` tightens origin and transform
-tolerance, loosens texel density, and downgrades E108 to a warning. Faces get
-more texels on purpose, which is why the density band widens. `mobile_vr` allows
-open shells for foliage cards. It also needs triangles rather than quads, and it
-grades texel density and NPOT textures as errors. Both profiles are pure data in
-[`profiles.py`](profiles.py). The engine has never heard of either.
+Five profiles ship — every one §7 names.
+
+| Profile | What it changes, and why |
+|---|---|
+| `game_prop_pbr` | The §7 table as written. The baseline the other four are stated against |
+| `character_skinned` | Tightens origin and transform tolerance, loosens texel density, downgrades E108 to a warning. Faces get more texels on purpose, which is why the density band widens |
+| `mobile_vr` | Allows open shells for foliage cards, needs triangles rather than quads, and grades texel density and NPOT textures as errors |
+| `hard_surface_subdiv` | The emitted faces are a subdivision cage, not the shipped surface. Quads stay mandatory — Catmull-Clark turns a non-quad into a visible pinch. Transform tolerance tightens, because a subdiv modifier evaluates in object space and an unapplied scale changes the resulting surface rather than only its interpretation. `min_face_area` rises, because a sliver that would vanish in a dense mesh is a pinch in a cage. Texel density drops to a note: it is measured on the cage and the renderer shades the limit surface, so the number is real and the gate would be wrong |
+| `film_usd` | An offline renderer reads this, not an engine importer. It dices and subdivides at render time, so n-gons become a note. USD composes xformOps onto the prim and preserves them exactly, so E104 becomes a warning rather than the silent FBX bug. Open shells are legal, the density band widens for per-tile UDIM authoring, and NPOT is an observation because a film texture system mips arbitrary dimensions |
+
+`film_usd` is the only profile that drops a rule rather than re-grading it:
+film does not budget triangles, so **E107 is not selected at all**. That is
+deliberate and different from a skip — parked in the *not checked* list it would
+nag forever about a declaration this pipeline is never going to make.
+
+All five are pure data in [`profiles.py`](profiles.py). The engine has never
+heard of any of them, which is the claim §7 makes and the reason adding the last
+two cost two literals and no engine change.
 
 ## Example report
 
@@ -208,10 +220,10 @@ probes, and it could not host E102. See proposed change 8.
 | `topology.py` | 244 | edge maps, manifoldness, bowties, components, degeneracy |
 | `uvmap.py` | 183 | UV islands, island naming, per-island area and texel density |
 | `geom.py` | 144 | polygon area, Newell normals, convex clip, segment distance |
-| `profiles.py` | 150 | `game_prop_pbr`, `character_skinned`, `mobile_vr`. Data only |
+| `profiles.py` | 271 | the five §7 profiles. Data only |
 | `rules/*.py` | 1590 | the 13 rules, grouped by what they read |
 | `fixtures.py` | 544 | 21 assets: 3 clean, 18 broken, one per failure mode |
-| `tests/*.py` | 1131 | 92 tests plus the Blender bridge script |
+| `tests/*.py` | 1229 | 103 tests plus the Blender bridge script |
 
 A new rule is a decorated function. A new profile is a tuple of codes. Neither
 touches `engine.py`. `test_engine.py` proves it: the test file defines a profile

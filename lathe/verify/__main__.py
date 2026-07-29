@@ -63,9 +63,12 @@ def _print_table() -> int:
               % (code, spec.severity.label, spec.title,
                  "  [approximate]" if spec.is_approximate else ""))
     print()
+    # Width follows the longest registered name: a profile defined outside this
+    # package should not knock the column out of line.
+    width = max(len(n) for n in PROFILES)
     for name in sorted(PROFILES):
         prof = get_profile(name)
-        print("%-18s %s" % (name, " ".join(prof.rules)))
+        print("%-*s %s" % (width, name, " ".join(prof.rules)))
     return 0
 
 

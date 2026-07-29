@@ -665,6 +665,26 @@ hard to explain to an agent.
 more reliable. Mitigate in tool descriptions and by making Tier 1 output genuinely
 excellent.
 
+**A clean textual merge can still be a semantic conflict.** W206 and the two newest profiles
+(`hard_surface_subdiv`, `film_usd`) were written on separate branches. Both touched
+`profiles.py`, in different places, so git merged them without a murmur — and the result was
+wrong. The new profiles listed `E106` and `W202` but not `W206`, because `W206` did not exist
+when they were written. `rules/uv.py` divides UV defects into exactly three: islands that
+intersect, islands merely too close, and UV area that has collapsed. A profile holding two
+thirds of a partition has a hole, and the hole is *silent* — a collapsed island simply goes
+unreported and the profile still says PASS.
+
+Nothing in either branch's tests could have caught it, because neither branch was wrong. Only
+the combination was. Review would not reliably catch it either: the diff shows two additive
+changes to a list of string literals.
+
+The fix is not to add the missing code, or not only that. It is an invariant asserted over
+*every registered profile* — any profile selecting part of the UV partition must select all of
+it — so the next rule or profile added on a branch cannot reopen the gap. That generalises: a
+rule set that grows on one axis while profiles grow on another needs structural tests over the
+cross product, not per-item tests on each side. §7's claim that "a new profile is data" holds,
+but data still has invariants.
+
 **Reading a file is a new trust boundary, and it arrived late.** Everything before import
 consumed only what this system generated. A `.glb` from a marketplace is attacker-controlled
 data, and three things in it reach places that were never designed for hostile input.
