@@ -71,7 +71,7 @@ reasons rather than prompt-quality ones.
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 486 tests pass. Checked against closed-form truth, not smoke.
+- 497 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 
