@@ -182,7 +182,12 @@ HARD_SURFACE_SUBDIV = register_profile(
             # Catmull-Clark turns every non-quad into an extraordinary vertex,
             # and the pinch it produces is visible on the limit surface. A cage
             # is quads or it is a bug.
-            "E102": {"max_face_verts": 4},
+            #
+            # Both bounds, because a maximum alone does not say "quads". With
+            # only `max_face_verts: 4` this profile passed a fully triangulated
+            # cage -- an affirmative PASS on the exact input the comment above
+            # calls a bug, and a triangle is the non-quad that actually turns up.
+            "E102": {"max_face_verts": 4, "min_face_verts": 4},
             # A subdivision modifier evaluates in object space, so an unapplied
             # transform changes the resulting surface rather than merely being
             # reinterpreted on import. Tighter than the prop default for the

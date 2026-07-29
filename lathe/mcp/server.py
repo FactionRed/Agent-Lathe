@@ -65,8 +65,21 @@ def _check(ref: Optional[str], profile: Optional[str] = None) -> str:
     solid = WS.solid(ref)
     c = WS.commit(ref)
     spec = _spec_from(c.spec, solid)
+    # The solid's UV has to be handed over explicitly, or every UV rule reports
+    # "asset declares no uv set at all" -- which is false, and worse than silence
+    # because it reads as a fact about the asset rather than a gap in the caller.
+    # A program that calls unwrap() got no UV checking at all until this line
+    # existed, so the whole UV rule set was unreachable from the only interface an
+    # agent uses.
+    #
+    # Safe because `vmesh.from_manifold` (to_mesh) and `pmesh.from_manifold`
+    # (to_mesh64) emit the same triangle order for the same Manifold, which is
+    # the order `solid.uv` is indexed by. Asserted in test_session.py -- get it
+    # wrong and UVs attach to the wrong triangles, which no rule would notice.
+    uv_sets = {solid.uv_set: solid.uv} if solid.has_uv else None
     asset = vmesh.Asset(
-        mesh=vmesh.from_manifold(solid.man, name=solid.name), spec=spec)
+        mesh=vmesh.from_manifold(solid.man, name=solid.name, uv_sets=uv_sets),
+        spec=spec)
     return str(vengine.check(asset, profile)).rstrip()
 
 
@@ -99,8 +112,13 @@ class ApplyInput(BaseModel):
             "Python source that builds geometry and assigns the finished Solid to "
             "`result`. The lathe.build API is already in scope -- do not import it. "
             "Optionally assign `spec` (a dict) to declare what the verifier should "
-            "check, e.g. spec = {'components': 1, 'origin': 'bottom_center', "
-            "'budget': {'tris_lod0': 3000}}."),
+            "check. A rule with nothing to compare against reports itself as *not "
+            "checked* rather than passing, so each key you add turns a skip into a "
+            "real check: {'components': 1, 'origin': 'bottom_center', "
+            "'budget': {'tris_lod0': 3000}, 'texel_density': 10.24, "
+            "'texture_resolution': 1024, 'target': 'unreal'}. texel_density is in "
+            "px/cm and drives W302; it only checks anything if the program also "
+            "calls unwrap()."),
         min_length=1, max_length=200000)
     message: str = Field(
         default="", description="Short commit message, e.g. 'add top rail'",
@@ -767,7 +785,9 @@ class ImportInput(BaseModel):
                      "lathe_view and lathe_observe read committed solids."))
     profile: Optional[str] = Field(
         default=None,
-        description="Rule profile for the validation report. Default game_prop_pbr.")
+        description=("Rule profile for the validation report: game_prop_pbr, "
+                     "character_skinned, mobile_vr, hard_surface_subdiv or "
+                     "film_usd. Default game_prop_pbr."))
     branch: Optional[str] = Field(
         default=None, description="Branch to commit on. Default: a new 'import' branch.")
 

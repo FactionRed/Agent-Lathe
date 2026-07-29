@@ -197,5 +197,75 @@ class TestQueryGrammar(unittest.TestCase):
         self.assertIn("raycast", out)
 
 
+class TestCheckSeesUv(unittest.TestCase):
+    """The UV rules must be reachable from the MCP surface.
+
+    They were not. `_check` built its AssetMesh from the manifold and never
+    handed over the solid's UV, so a program that called `unwrap()` got a report
+    saying "asset declares no uv set at all" for W202, W206 and W302. That is
+    worse than silence: it reads as a fact about the asset rather than a gap in
+    the caller, and it made an entire rule set unreachable from the only
+    interface an agent uses. `models/build_all.py` passed uv_sets explicitly,
+    which is exactly why the rules looked wired up.
+    """
+
+    def setUp(self):
+        import lathe.build as B
+        from lathe.build import unwrap
+        self.solid = unwrap(
+            B.box(0.4, 0.4, 0.05, tag="top", name="SM_UvReach_Test_LOD0"),
+            resolution=1024, texel_density=10.24)
+
+    def test_the_two_adapters_agree_on_triangle_order(self):
+        """The invariant the fix rests on.
+
+        `solid.uv` is indexed by the triangle order of `pmesh.from_manifold`
+        (to_mesh64). The verifier reads `vmesh.from_manifold` (to_mesh). Handing
+        the UV across is only correct while those two orders match -- and if they
+        ever diverge, UVs attach to the wrong triangles and no rule can tell,
+        because every triangle still has *a* UV. Silent, and worse than the bug
+        it replaced.
+        """
+        import numpy as np
+        from lathe.perceive import mesh as pmesh
+        from lathe.verify import mesh as vmesh
+        pm = pmesh.from_manifold(self.solid.man)
+        vm = vmesh.from_manifold(self.solid.man, name="x")
+        self.assertTrue(
+            np.array_equal(pm.tris, np.array(vm.faces, dtype=np.int64)),
+            "to_mesh and to_mesh64 disagree on triangle order -- _check must "
+            "remap the UV instead of passing it straight through")
+        self.assertTrue(np.array_equal(self.solid.mesh().tris, pm.tris))
+
+    def test_uv_rules_stop_reporting_no_uv_set(self):
+        from lathe.verify import engine as vengine
+        from lathe.verify import mesh as vmesh
+        spec = vmesh.EmitSpec(components=1, texel_density=10.24,
+                              texture_resolution=1024)
+        asset = vmesh.Asset(
+            mesh=vmesh.from_manifold(self.solid.man, name=self.solid.name,
+                                     uv_sets={self.solid.uv_set: self.solid.uv}),
+            spec=spec)
+        skipped = {s.code for s in vengine.check(asset, "game_prop_pbr").skipped}
+        for code in ("W202", "W206", "W302"):
+            self.assertNotIn(code, skipped,
+                             "%s is still skipped, so the UV never arrived" % code)
+
+    def test_the_server_check_path_carries_the_uv(self):
+        """End to end through the function lathe_apply and lathe_check both use."""
+        from lathe.mcp import server
+        ws = server.WS
+        program = (
+            's = box(0.4, 0.4, 0.05, tag="top", name="SM_UvReach_Test_LOD0")\n'
+            'result = unwrap(s, resolution=1024, texel_density=10.24)\n'
+            'spec = {"components": 1, "texel_density": 10.24, '
+            '"texture_resolution": 1024}\n')
+        commit, solid, _d, _n = ws.apply(program, "uv reach", branch="uvreach_test")
+        self.assertTrue(solid.has_uv, "the program's unwrap did not stick")
+        report = server._check(commit.id)
+        self.assertNotIn("no uv set at all", report,
+                         "the check path is still blind to UVs")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

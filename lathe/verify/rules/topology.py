@@ -145,48 +145,70 @@ def e101(ctx):
 @rule(
     "E102",
     ERROR,
-    "N-gons in emitted geometry",
+    "Face size outside the profile's range",
     needs=("topology",),
-    defaults={"max_face_verts": 4, "max_report": 8},
+    defaults={"max_face_verts": 4, "min_face_verts": 3, "max_report": 8},
 )
 def e102(ctx):
-    """Faces with more sides than the profile allows. Engine importers
-    triangulate n-gons with an algorithm nobody chose, so shading and the
-    triangle count both stop being predictable at emit."""
+    """Faces the profile does not allow, in either direction.
+
+    The upper bound is the classic n-gon check: engine importers triangulate
+    n-gons with an algorithm nobody chose, so shading and the triangle count both
+    stop being predictable at emit.
+
+    The lower bound exists because a maximum alone cannot say "quads". `max = 3`
+    happens to mean triangles-only, so `mobile_vr` reads correctly by accident,
+    but `max = 4` admits triangles as readily as quads -- and a triangle *is* the
+    non-quad that matters. `hard_surface_subdiv` documents "a cage is quads or it
+    is a bug", and with only a maximum it certified a fully triangulated cage as
+    a PASS: not a skip, an affirmative pass on the exact input its own comment
+    calls a bug. Catmull-Clark makes every triangle corner an extraordinary
+    vertex, which is a visible pinch on the limit surface.
+
+    Default 3, so no profile that does not ask for a lower bound changes.
+    """
     mesh = ctx.mesh
     limit = int(ctx.p("max_face_verts"))
-    offenders = [i for i, f in enumerate(mesh.faces) if len(f) > limit]
+    floor = int(ctx.p("min_face_verts"))
+    over = [i for i, f in enumerate(mesh.faces) if len(f) > limit]
+    under = [i for i, f in enumerate(mesh.faces) if len(f) < floor]
+    offenders = sorted(over + under)
     if not offenders:
         return
-    hist = {n: c for n, c in mesh.face_size_histogram().items() if n > limit}
-    worst = max(offenders, key=lambda i: len(mesh.faces[i]))
+
+    hist = {n: c for n, c in mesh.face_size_histogram().items()
+            if n > limit or n < floor}
+    # Rank by distance from the allowed range, so the report leads with the worst.
+    def _excess(i):
+        n = len(mesh.faces[i])
+        return max(n - limit, floor - n)
+
+    worst = max(offenders, key=_excess)
     rows = [
         "%d-gon %s" % (len(mesh.faces[i]), face_locator(mesh, i))
-        for i in sorted(offenders, key=lambda i: -len(mesh.faces[i]))[: ctx.p("max_report")]
+        for i in sorted(offenders, key=lambda i: -_excess(i))[: ctx.p("max_report")]
     ]
-    yield ctx.finding(
-        summary="N-gons in emitted geometry: %s over %d verts"
-        % (plural(len(offenders), "face"), limit),
-        entity=entity_for(mesh, offenders),
-        where=[("faces", rows)],
-        evidence="%d/%d faces exceed %d verts (%s); largest is a %d-gon of %s m²"
-        % (
-            len(offenders),
-            mesh.num_faces,
-            limit,
-            ", ".join("%d-gon x%d" % (k, v) for k, v in sorted(hist.items())),
-            len(mesh.faces[worst]),
-            num(mesh.face_area(worst)),
-        ),
-        data={
-            "ngon_count": len(offenders),
-            "face_count": mesh.num_faces,
-            "max_face_verts": limit,
-            "size_histogram": {str(k): v for k, v in hist.items()},
-            "locations": [list(map(float, mesh.face_centroid(i, world=True)))
-                          for i in offenders],
-        },
-        repair=Repair(
+    if over and under:
+        what = "%s outside %d-%d verts" % (plural(len(offenders), "face"), floor, limit)
+    elif over:
+        what = "%s over %d verts" % (plural(len(over), "face"), limit)
+    else:
+        what = "%s under %d verts" % (plural(len(under), "face"), floor)
+
+    # A face with too few sides is fixed by joining, not by cutting.
+    if under and not over:
+        repair = Repair(
+            "mesh.quadrangulate",
+            (Raw(mesh.name),),
+            {"faces": Raw("faces(verts < %d)" % floor)},
+            alternatives=(
+                "relax E102.min_face_verts to 3 in the profile when a triangulated "
+                "mesh is genuinely the deliverable -- but not for a subdivision "
+                "cage, where every triangle is an extraordinary vertex",
+            ),
+        )
+    else:
+        repair = Repair(
             "mesh.triangulate",
             (Raw(mesh.name),),
             {"faces": Raw("faces(verts > %d)" % limit), "method": Raw("beauty")},
@@ -194,7 +216,33 @@ def e102(ctx):
                 "mesh.quadrangulate(%s, faces = faces(verts > %d))  — when the target "
                 "wants quads, not tris" % (mesh.name, limit),
             ),
+        )
+
+    yield ctx.finding(
+        summary="Face size outside the profile's range: %s" % what,
+        entity=entity_for(mesh, offenders),
+        where=[("faces", rows)],
+        evidence="%d/%d faces outside %d-%d verts (%s); furthest is a %d-gon of %s m²"
+        % (
+            len(offenders),
+            mesh.num_faces,
+            floor,
+            limit,
+            ", ".join("%d-gon x%d" % (k, v) for k, v in sorted(hist.items())),
+            len(mesh.faces[worst]),
+            num(mesh.face_area(worst)),
         ),
+        data={
+            "ngon_count": len(over),
+            "undersized_count": len(under),
+            "face_count": mesh.num_faces,
+            "max_face_verts": limit,
+            "min_face_verts": floor,
+            "size_histogram": {str(k): v for k, v in hist.items()},
+            "locations": [list(map(float, mesh.face_centroid(i, world=True)))
+                          for i in offenders],
+        },
+        repair=repair,
     )
 
 

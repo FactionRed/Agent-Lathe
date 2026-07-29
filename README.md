@@ -71,7 +71,7 @@ reasons rather than prompt-quality ones.
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 481 tests pass. Checked against closed-form truth, not smoke.
+- 486 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 
@@ -104,7 +104,7 @@ Needs Python 3.12, `manifold3d`, `numpy`, `Pillow`, and Blender 5.2 for bevel an
 pip install manifold3d numpy pillow
 python models/build_all.py               # build, verify, probe and render all three
 python models/build_all.py --no-render   # skip Blender, keep the checks
-python -m lathe.verify.tests             # 104 tests
+python -m pytest lathe/verify/tests -q   # 106 tests
 python -m pytest lathe/perceive/tests -q # 172 tests
 ```
 
