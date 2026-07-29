@@ -54,6 +54,7 @@ from .mesh import (  # noqa: F401
     Transform,
     from_bpy_mesh,
     from_manifold,
+    from_mesh,
 )
 from .topology import Component, Topology  # noqa: F401
 from .uvmap import Island, UVLayout  # noqa: F401
@@ -88,6 +89,7 @@ __all__ = [
     "fixtures",
     "from_bpy_mesh",
     "from_manifold",
+    "from_mesh",
     "get_profile",
     "load_rules",
     "profiles",

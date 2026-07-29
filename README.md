@@ -55,16 +55,22 @@ reasons rather than prompt-quality ones.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
+- **Import: `.glb` and `.gltf` read natively** — no Blender, no library. glTF is Y-up and
+  splits a vertex at every seam, so a cube arrives with 24 vertices and every edge is a
+  boundary; welding and the axis conversion are what decide whether an import can be
+  booleaned at all. Draco and meshopt are refused by name rather than mis-decoded into
+  plausible-looking rubbish.
 - **The `.lathe` language**: `600mm` and `0.6m` unify, and `box(600, 600, 600)` fails to
   compile. Units are part of the type, so the metres-versus-millimetres bug cannot be written.
 - **Interactive preview**: one self-contained HTML file — full orbit camera, adjustable
   lighting rig, four shading modes, and live vertex/polygon statistics with a per-tag
   breakdown. No library, no network, no Blender.
-- **MCP surface: eleven tools**, so an agent can author, measure, look, validate, branch,
-  compare and export without anyone writing Python. See [lathe/mcp/](lathe/mcp/README.md).
+- **MCP surface: twelve tools**, so an agent can author, import, measure, look, validate,
+  branch, compare and export without anyone writing Python. See
+  [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 304 tests pass. Checked against closed-form truth, not smoke.
+- 469 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 
@@ -115,7 +121,7 @@ Set `LATHE_BLENDER` if Blender is not on `PATH`.
 | [`lathe/mcp/`](lathe/mcp/README.md) | The eleven-tool agent surface |
 | `lathe/lang/` | The `.lathe` language: units, parser, evaluator |
 | `lathe/viewer/` | Self-contained interactive WebGL preview |
-| `lathe/io/` | Export |
+| [`lathe/io/`](lathe/io/README.md) | Export, and the native glTF reader |
 | `models/` | The three test assets and the build runner |
 | `prototype/` | Kernel spikes that settled the design questions |
 

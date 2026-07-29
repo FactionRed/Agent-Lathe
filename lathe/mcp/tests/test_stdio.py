@@ -25,7 +25,7 @@ from mcp.client.stdio import stdio_client  # noqa: E402
 EXPECTED = {
     "lathe_setup", "lathe_apply", "lathe_query", "lathe_observe", "lathe_check",
     "lathe_export", "lathe_log", "lathe_branch", "lathe_checkout", "lathe_compare",
-    "lathe_view",
+    "lathe_view", "lathe_import",
 }
 
 PROGRAM = '''
@@ -80,7 +80,7 @@ async def main():
             # -- handshake and schemas ------------------------------------
             listed = await s.list_tools()
             names = {t.name for t in listed.tools}
-            check("eleven tools advertised", names == EXPECTED,
+            check("twelve tools advertised", names == EXPECTED,
                   "missing %s, unexpected %s" % (EXPECTED - names, names - EXPECTED))
             check("every tool has a description",
                   all((t.description or "").strip() for t in listed.tools))
@@ -192,6 +192,63 @@ async def main():
                 os.remove(view_path)
             r = await s.call_tool("lathe_view", {"params": {"path": "nope.txt"}})
             check("view rejects a non-html path", "must end in .html" in text_of(r))
+
+            # -- import (native, no Blender) -------------------------------
+            # Two fixtures, because the two outcomes are different products: a
+            # cube that promotes to a solid, and an open quad that stays a mesh.
+            import tempfile as _tf
+            from lathe.io.tests import gltf_fixtures as _F
+            imp_dir = _tf.mkdtemp(prefix="lathe_stdio_glb_")
+            try:
+                b = _F.Builder()
+                pos, tris = _F.cube_split(0.4)
+                doc = _F.document(b, [[_F.primitive(b, pos, tris, material=0)]],
+                                  materials=[{"name": "M_crate"}])
+                cube_path = _F.write_glb(os.path.join(imp_dir, "crate.glb"), doc,
+                                         bytes(b.bin))
+
+                r = await s.call_tool("lathe_import", {"params": {
+                    "path": cube_path, "tag": "crate", "branch": "imported",
+                    "view": True}})
+                body = text_of(r)
+                check("import reads a glb natively", "PROMOTED TO SOLID" in body,
+                      body[:200].replace("\n", " "))
+                check("import welds the split corners", "24 -> 8 verts" in body,
+                      body[:200].replace("\n", " "))
+                check("import names the axis conversion", "Y-up -> Lathe Z-up" in body)
+                check("import keeps the material as a part", "M_crate" in body)
+                check("import validates what it read", "check " in body)
+                check("import commits so other tools can reach it",
+                      "on branch imported" in body)
+                check("import writes a preview on request", "preview   " in body)
+
+                r = await s.call_tool("lathe_query", {"params": {
+                    "expr": "volume", "ref": "imported"}})
+                check("the imported solid measures", "0.064" in text_of(r),
+                      text_of(r)[:120].replace("\n", " "))
+
+                b2 = _F.Builder()
+                opos, otris = _F.open_quad()
+                doc2 = _F.document(b2, [[_F.primitive(b2, opos, otris)]])
+                open_path = _F.write_glb(os.path.join(imp_dir, "shell.glb"), doc2,
+                                         bytes(b2.bin))
+                r = await s.call_tool("lathe_import", {"params": {
+                    "path": open_path}})
+                body = text_of(r)
+                check("an open mesh is reported, not committed",
+                      "MESH ONLY" in body and "Not committed" in body)
+                check("an open mesh still gets the rule report",
+                      "E101" in body, body[:200].replace("\n", " "))
+                check("the reason names the boundary edges",
+                      "boundary edge" in body)
+
+                r = await s.call_tool("lathe_import", {"params": {
+                    "path": os.path.join(imp_dir, "absent.glb")}})
+                check("a missing file is an error, not a crash",
+                      "no such file" in text_of(r))
+            finally:
+                import shutil as _sh
+                _sh.rmtree(imp_dir, ignore_errors=True)
 
             # -- render ---------------------------------------------------
             if do_render:

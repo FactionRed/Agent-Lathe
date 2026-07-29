@@ -1,5 +1,5 @@
 """
-Interactive preview -- a self-contained WebGL viewer for a Solid.
+Interactive preview -- a self-contained WebGL viewer for a Solid or a Mesh.
 
 Static contact sheets answer "is the proportion right". They do not answer "what
 does the back of that joint look like", and a still frame cannot be turned over.
@@ -17,6 +17,11 @@ What the viewer shows:
     and gloss, with five rig presets
   * vertex and polygon statistics, including logical faces, components, genus and
     a per-tag triangle breakdown driven by section 5.2 provenance
+
+It takes a neutral Mesh as well as a Solid, so an imported .glb can be looked at
+whether or not it is watertight. That is the case that matters most: geometry you
+authored, you already understand, and an open shell is the *normal* state of an
+asset from somewhere else.
 """
 
 from __future__ import annotations
@@ -111,39 +116,62 @@ def _wire_edges(msh: pmesh.Mesh, min_dihedral: float = 12.0) -> np.ndarray:
     return verts[pairs.reshape(-1)].astype(np.float32)
 
 
-def _stats(solid: Solid, msh: pmesh.Mesh) -> dict:
+def _subject(subject) -> tuple:
+    """(mesh, {part id: tag}, name). Accepts a Solid or a neutral Mesh.
+
+    A Mesh is accepted because an imported .glb is generally *not* a solid -- an
+    open shell is the normal case for scanned and sculpted assets -- and being
+    unable to look at the one kind of geometry you did not author would make the
+    viewer useless exactly when it is most needed.
+    """
+    if isinstance(subject, Solid):
+        return subject.mesh(), dict(subject.tags), subject.name
+    if isinstance(subject, pmesh.Mesh):
+        return subject, dict(subject.parts or {}), subject.name
+    raise TypeError("expected a Solid or a perceive Mesh, got %s"
+                    % type(subject).__name__)
+
+
+def _stats(msh: pmesh.Mesh) -> dict:
+    """Read every number off the mesh, not off the kernel.
+
+    The kernel is not available for an imported mesh, and a viewer that needed it
+    could not show the geometry most in need of looking at. Tier 1 already
+    computes all of this closed-form, including saying `n/a` for the volume of an
+    open surface rather than printing a confident wrong number.
+    """
     from ..perceive import tier1
-    topo = msh.topology
-    lo, hi = solid.bbox()
-    faces = (len(set(zip(msh.part_id.tolist(), msh.face_id.tolist())))
-             if msh.part_id is not None and msh.face_id is not None
-             else int(msh.n_tris))
-    wt = tier1.is_watertight(msh)
+    counts = tier1.counts(msh).fields
+    vol = tier1.volume(msh).fields
+    lo, hi = pmesh.bounds(msh)
     return {
-        "verts": int(msh.n_verts),
-        "tris": int(msh.n_tris),
-        "edges": int(topo.n_edges),
-        "faces": faces,
-        "components": int(solid.components()),
-        "genus": int(solid.man.genus()),
-        "watertight": bool(getattr(wt, "value", None) is True or "true" in str(wt).lower()),
+        "verts": int(counts["verts"]),
+        "tris": int(counts["tris"]),
+        "edges": int(counts["edges"]),
+        "faces": int(counts["faces_logical"]),
+        "components": int(counts["components"]),
+        "genus": counts["genus"] if counts["genus"] is not None else "n/a",
+        "watertight": bool(vol["closed"]),
         "size": "%.0f x %.0f x %.0f mm" % tuple((h - l) * 1000 for l, h in zip(lo, hi)),
-        "volume": "%.4f m3" % solid.volume(),
-        "area": "%.4f m2" % solid.man.surface_area(),
+        "volume": ("%.4f m3" % vol["volume_m3"] if vol["closed"]
+                   else "n/a (open surface)"),
+        "area": "%.4f m2" % tier1.surface_area(msh).fields["area_m2"],
+        "boundary_edges": int(counts["boundary_edges"]),
+        "nonmanifold_edges": int(counts["nonmanifold_edges"]),
     }
 
 
-def to_html(solid: Solid, materials: Optional[Dict[str, str]] = None,
+def to_html(subject, materials: Optional[Dict[str, str]] = None,
             title: Optional[str] = None, wire_angle: float = 12.0) -> str:
-    """Render `solid` into a standalone HTML document."""
-    msh = solid.mesh()
+    """Render a Solid or a neutral Mesh into a standalone HTML document."""
+    msh, part_tags, subject_name = _subject(subject)
     materials = dict(materials or {})
 
-    tags = sorted(set(solid.tags.values())) or ["mesh"]
+    tags = sorted(set(part_tags.values())) or ["mesh"]
     tag_index = {t: i for i, t in enumerate(tags)}
     per_tri = np.zeros(msh.n_tris, dtype=np.float32)
-    if msh.part_id is not None:
-        lut = {pid: tag_index.get(tag, 0) for pid, tag in solid.tags.items()}
+    if msh.part_id is not None and part_tags:
+        lut = {pid: tag_index.get(tag, 0) for pid, tag in part_tags.items()}
         per_tri = np.array([lut.get(int(p), 0) for p in msh.part_id],
                            dtype=np.float32)
 
@@ -153,7 +181,7 @@ def to_html(solid: Solid, materials: Optional[Dict[str, str]] = None,
     normals = np.repeat(pmesh.tri_normals(msh), 3, axis=0)
     tag_attr = np.repeat(per_tri, 3)
 
-    lo, hi = solid.bbox()
+    lo, hi = pmesh.bounds(msh)
     counts = np.bincount(per_tri.astype(np.int64), minlength=len(tags))
 
     data = {
@@ -169,25 +197,40 @@ def to_html(solid: Solid, materials: Optional[Dict[str, str]] = None,
             "center": [round((a + b) / 2, 6) for a, b in zip(lo, hi)],
             "size": [round(b - a, 6) for a, b in zip(lo, hi)],
         },
-        "stats": _stats(solid, msh),
+        "stats": _stats(msh),
     }
 
     shell = open(_SHELL, "r", encoding="utf-8").read()
-    name = title or solid.name
+    name = title or subject_name
     return (shell
             .replace("__TITLE__", _escape(name))
             .replace("__NAME__", _escape(name))
-            .replace("__DATA__", json.dumps(data, separators=(",", ":"))))
+            .replace("__DATA__", _json_for_html(data)))
+
+
+def _json_for_html(data: dict) -> str:
+    """JSON safe to drop inside a <script> element.
+
+    `json.dumps` does not escape `<`, so a tag named `</script><script>` would
+    close the data block and run as markup. Tag names used to come only from the
+    program the agent wrote; since import they can come from a stranger's .glb,
+    so the payload is escaped here as well as sanitised at the reader. `\\u003c`
+    is an ordinary JSON escape, so the parsed value is unchanged.
+    """
+    return (json.dumps(data, separators=(",", ":"))
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
 
 
 def _escape(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def write(solid: Solid, path: str, materials: Optional[Dict[str, str]] = None,
+def write(subject, path: str, materials: Optional[Dict[str, str]] = None,
           title: Optional[str] = None) -> dict:
     """Write the preview to `path`. Returns a small summary."""
-    html = to_html(solid, materials, title)
+    html = to_html(subject, materials, title)
+    msh = _subject(subject)[0]
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     # newline="" so the file is byte-identical to the string. Without it, Windows
     # rewrites every \n as \r\n and the file no longer matches what to_html
@@ -197,6 +240,6 @@ def write(solid: Solid, path: str, materials: Optional[Dict[str, str]] = None,
     return {
         "path": os.path.abspath(path),
         "bytes": os.path.getsize(path),
-        "tris": int(solid.n_tris),
+        "tris": int(msh.n_tris),
         "self_contained": True,
     }

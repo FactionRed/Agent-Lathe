@@ -3,9 +3,9 @@
 DESIGN.md §9. The layer that lets an agent drive Lathe instead of a human writing
 Python.
 
-Eleven tools, deliberately. A large tool surface drowns the model. The expressive
-weight lives in the program text `lathe_apply` takes and the expression language
-`lathe_query` speaks.
+Twelve tools, deliberately few. A large tool surface drowns the model. The
+expressive weight lives in the program text `lathe_apply` takes and the expression
+language `lathe_query` speaks.
 
 ## Setup
 
@@ -53,10 +53,45 @@ a ping or honour a cancellation for the duration.
 | `lathe_view` | Standalone interactive preview: orbit, relight, read stats | no |
 | `lathe_check` | Full rule report against a profile | yes |
 | `lathe_export` | Write obj/stl natively, glb/gltf/fbx/usd/ply via Blender | no |
+| `lathe_import` | Read a .glb or .gltf natively, then validate what it read | no |
 | `lathe_log` | Commits, branches, current head | yes |
 | `lathe_branch` | Branch and switch, for trying a variant | no |
 | `lathe_checkout` | Switch to a branch or commit | no |
 | `lathe_compare` | Render several commits into one grid | yes |
+
+## Reading someone else's asset
+
+`lathe_import` reads `.glb` and `.gltf` **natively** — no Blender, no library. Use
+it to bring in an asset from a marketplace, a scan, another tool, or an earlier
+export, so the rest of the surface can reach it.
+
+It reports what the file actually is, then validates it. Two outcomes, and the
+difference matters:
+
+- **Promoted to a solid.** It commits, so `lathe_query`, `lathe_view`,
+  `lathe_apply` and `lathe_export` all work on it.
+- **Mesh only.** An open shell is the *normal* state of anything scanned or
+  sculpted, so this is not a failure. The rule report still runs and names the
+  source material, not a face index. Only booleans, bevel and volume need a solid.
+
+The reason text names which property failed — boundary edges, a branching surface,
+disagreeing winding — because `NotManifold` on its own tells an agent nothing it
+can act on.
+
+Two things about it are worth knowing at this layer. It commits the import **as a
+program** (`result = import_glb(...)`), so history needs no special case and the
+commit replays like any other. And that program is the one operation here that is
+not a pure function of its arguments: it reads a file, so it reproduces only while
+that file is unchanged. The report carries the content hash for exactly that
+reason.
+
+`view=true` writes the interactive preview. For a non-solid import that is the only
+look available, because `lathe_view` and `lathe_observe` read committed solids.
+
+[lathe/io/README.md](../io/README.md) covers the reader itself: welding, the up-axis
+conversion, transform baking, and what it refuses.
+
+## Not implemented
 
 `library()` from §9 is **not** implemented. It searches a parametric component
 library, and no such library exists yet. A tool that returns nothing is worse than
