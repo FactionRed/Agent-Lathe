@@ -76,8 +76,15 @@ class Probe:
         out += [fmt.field_line("problem", p) for p in self.problems]
         return out
 
-    def text(self, width: int = fmt.LABEL_WIDTH, detail: bool = True) -> str:
-        return "\n".join(self.lines(width=width, detail=detail))
+    def text(self, width: int = fmt.LABEL_WIDTH, detail: bool = True,
+             ascii_only: bool | None = None) -> str:
+        """The block as one string, folded to ASCII if stdout needs it.
+
+        `lines()` stays UTF-8 whatever the console is -- it is the structural
+        accessor. The fold belongs here, at the point the text becomes output.
+        """
+        return fmt.for_stdout("\n".join(self.lines(width=width, detail=detail)),
+                              ascii_only)
 
     def __str__(self) -> str:
         return self.text()
@@ -999,7 +1006,7 @@ def symmetry_planes(mesh: Mesh, about="bbox_center", method: str = "auto") -> Pr
 
 
 def report(mesh: Mesh, unit: str = "m", detail: bool = False,
-           symmetry_method: str = "auto") -> str:
+           symmetry_method: str = "auto", ascii_only: bool | None = None) -> str:
     """Every Tier 1 probe in one block. One call, no state, no images.
 
     This is the thing an agent should reach for after every `apply`. `detail`
@@ -1029,7 +1036,7 @@ def report(mesh: Mesh, unit: str = "m", detail: bool = False,
     if problems and not detail:
         lines.append("")
         lines.extend("  ! " + p for p in problems)
-    return "\n".join([head] + lines)
+    return fmt.for_stdout("\n".join([head] + lines), ascii_only)
 
 
 __all__ = [

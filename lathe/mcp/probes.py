@@ -142,18 +142,22 @@ def _kwargs(text: str) -> Dict[str, Any]:
 
 
 def evaluate(solid: Solid, expr: str) -> str:
+    # ascii_only=False everywhere below: this text leaves over JSON-RPC, which
+    # is UTF-8, so it keeps the typographic form even when the console behind
+    # the server is a cp1252 one that would make a printed probe fold.
     expr = (expr or "").strip()
     if not expr:
         raise LatheError("empty query.\n\n" + grammar())
 
     if expr in _SCALARS:
-        return str(_SCALARS[expr][0](solid)).rstrip()
+        return _SCALARS[expr][0](solid).text(ascii_only=False).rstrip()
     if expr == "tags":
         return _tags(solid)
 
     m = _SYM.match(expr)
     if m:
-        return str(tier1.symmetry(solid.mesh(), m.group(1).upper())).rstrip()
+        return tier1.symmetry(
+            solid.mesh(), m.group(1).upper()).text(ascii_only=False).rstrip()
 
     m = _RAY.match(expr)
     if m:
@@ -164,8 +168,9 @@ def evaluate(solid: Solid, expr: str) -> str:
                 "raycast(from=0,-2,0.3, dir=0,1,0)")
         # The probe layer refuses a bare tuple on purpose -- section 4.1 makes an
         # unmarked length a type error. State the unit rather than route around it.
-        return str(tier1.raycast(solid.mesh(), kw["from"], kw["dir"],
-                                 unit=str(kw.get("unit", "m")))).rstrip()
+        return tier1.raycast(
+            solid.mesh(), kw["from"], kw["dir"],
+            unit=str(kw.get("unit", "m"))).text(ascii_only=False).rstrip()
 
     m = _SEL.match(expr)
     if m:
