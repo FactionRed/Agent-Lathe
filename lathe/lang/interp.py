@@ -168,17 +168,49 @@ class Interp:
         self.materials[node.name] = sel.obj
 
     def do_uv(self, node: S.UVSet) -> None:
+        """`uv final by angle_seams(threshold = 66deg, resolution = 1024,
+        texel_density = 5.12)`"""
         target = self.eval(node.target)
+        if not (isinstance(target, V.Opaque) and isinstance(target.obj, Solid)):
+            self.die("`uv ... by` needs a solid", node)
         method = node.method
-        name = method.func if isinstance(method, S.Call) else "unwrap"
+        name = method.func if isinstance(method, S.Call) else "angle_seams"
+        if name not in ("angle_seams", "unwrap"):
+            self.die("unknown UV method %r" % name, node,
+                     "Only angle_seams is implemented.")
         kw = {k: self.eval(v) for k, v in getattr(method, "kwargs", {}).items()}
-        self.uv_requests.append((target, name, kw))
-        # Honest about the gap rather than silently doing nothing.
-        self.die(
-            "`uv` is parsed but not implemented",
-            node,
-            "UV unwrapping does not exist yet, so this would silently do nothing. "
-            "Remove the line; the verifier reports the UV rules as not checked.")
+
+        thr = kw.get("threshold")
+        res = kw.get("resolution")
+        dens = kw.get("texel_density")
+        pad = kw.get("padding")
+        resolution = 1024 if res is None else V.as_int(res, "resolution")
+
+        try:
+            solid = B.unwrap(
+                target.obj,
+                max_angle=66.0 if thr is None else V.as_degrees(thr, "threshold"),
+                resolution=resolution,
+                padding_px=None if pad is None else V.as_int(pad, "padding"))
+            if dens is not None:
+                # Declared density means uniform density, and an unwrap alone does
+                # not give it: the packer stretches whatever it must to fill the
+                # atlas. Rescaling here is what makes W302 pass by construction.
+                solid = B.rescale_to_density(
+                    solid, V.as_number(dens, "texel_density"),
+                    resolution=resolution)
+        except (UnitError, LatheError) as exc:
+            raise LatheRuntimeError(str(exc), node, self.line_of(node)) from None
+
+        self.result = solid
+        # Rebind the name the program used, so later statements see the UVs.
+        for key, val in list(self.env.items()):
+            if isinstance(val, V.Opaque) and val.obj is target.obj:
+                self.env[key] = V.Opaque(solid, "solid")
+        self.uv_requests.append((solid.uv_set, name, {
+            "resolution": resolution,
+            "texel_density": None if dens is None else V.as_number(dens, "d"),
+        }))
 
     def do_emit(self, node: S.Emit) -> None:
         if self.result is None:

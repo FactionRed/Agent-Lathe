@@ -49,6 +49,7 @@ Severity is the profile's decision, not the rule's. The column below shows the
 | W201 | warn | Origin sits further than `tolerance_mm` from the declared reference point | offset per axis in mm, distance, the reference the geometry *does* match |
 | W202 | warn | An island-to-island or island-to-border gap falls under the padding table for the declared resolution | worst gap in px, required px, per-pair gaps |
 | W203 | warn | A declared texture dimension is not a power of two | actual size, nearest power of two, pixel-count delta |
+| W206 | warn | An island's UV area has collapsed, so real surface samples one texel | uv area, world area, share of the surface |
 | W302 | warn | An island's texel density leaves target ±`tolerance_pct` | px/cm per island, % off target, observed range, allowed band |
 | N401 | note | An object or texture name does not match `[Prefix]_[Name]_[Variant]_[LOD]` | which segment failed and why, plus a corrected name |
 

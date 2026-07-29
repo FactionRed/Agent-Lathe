@@ -300,23 +300,86 @@ class Asset:
 
 
 def from_manifold(man, name: str, transform: Transform = Transform(),
-                  face_groups: Optional[Mapping[str, Sequence[int]]] = None) -> AssetMesh:
+                  face_groups: Optional[Mapping[str, Sequence[int]]] = None,
+                  uv_sets: Optional[Mapping[str, Sequence]] = None) -> AssetMesh:
     """Adapt a `manifold3d.Manifold` into an AssetMesh.
 
     `to_mesh()` hands back read-only views and `np.ascontiguousarray` is a
     no-op on them, so the copies below are explicit -- see prototype/README.md.
+
+    `uv_sets` accepts either the per-corner `(T, 3, 2)` shape the authoring layer
+    carries or the flat `(L, 2)` this class stores; both are the same numbers, and
+    accepting the former means the caller does not have to remember which. The
+    verifier stays independent of the authoring layer either way -- it takes UVs,
+    it does not know how to make them.
     """
     mesh = man.to_mesh()
     vp = np.array(mesh.vert_properties, dtype=np.float64, copy=True)
     tv = np.array(mesh.tri_verts, dtype=np.int64, copy=True)
     verts = vp[:, :3]
     faces = tuple(tuple(int(i) for i in tri) for tri in tv)
+
+    flat: dict = {}
+    for key, uv in dict(uv_sets or {}).items():
+        arr = np.asarray(uv, dtype=np.float64)
+        if arr.ndim == 3 and arr.shape[1:] == (3, 2):
+            arr = arr.reshape(-1, 2)
+        flat[key] = arr
+
     return AssetMesh(
         name=name,
         verts=verts,
         faces=faces,
         transform=transform,
         face_groups=dict(face_groups or {}),
+        uv_sets=flat,
+    )
+
+
+def from_mesh(mesh, name: Optional[str] = None, transform: Transform = Transform(),
+              uv_sets: Optional[Mapping[str, Sequence]] = None) -> AssetMesh:
+    """Adapt a neutral triangle mesh -- the shape an imported glTF arrives in.
+
+    Duck-typed on purpose. This reads `.verts`, `.tris` and optionally
+    `.part_id`, `.parts` and `.uv`, which is the whole contract; it does not
+    import `perceive` or `io`, so the dependency arrow keeps pointing one way and
+    the rule engine stays the cheapest, most portable subsystem (see the module
+    docstring). Anything that can produce those arrays can be verified.
+
+    Face groups come from part ids, so a finding on an imported asset names the
+    material it came from -- `barrel.M_metal_bands` rather than `face 4471`.
+    Several parts may share a name (an exporter that splits one material across
+    primitives), and their triangles merge under it, which is what you want when
+    reading a report.
+    """
+    verts = np.asarray(mesh.verts, dtype=np.float64)
+    tris = np.asarray(mesh.tris, dtype=np.int64)
+    faces = tuple(tuple(int(i) for i in tri) for tri in tris)
+
+    groups: Dict[str, List[int]] = {}
+    part_id = getattr(mesh, "part_id", None)
+    if part_id is not None:
+        names = dict(getattr(mesh, "parts", {}) or {})
+        for i, pid in enumerate(np.asarray(part_id).reshape(-1).tolist()):
+            groups.setdefault(names.get(int(pid), "part_%d" % int(pid)), []).append(i)
+
+    sets = dict(uv_sets or {})
+    if not sets and getattr(mesh, "uv", None) is not None:
+        sets[getattr(mesh, "uv_set", "UV0")] = mesh.uv
+    flat: dict = {}
+    for key, uv in sets.items():
+        arr = np.asarray(uv, dtype=np.float64)
+        if arr.ndim == 3 and arr.shape[1:] == (3, 2):
+            arr = arr.reshape(-1, 2)
+        flat[key] = arr
+
+    return AssetMesh(
+        name=name or getattr(mesh, "name", "mesh"),
+        verts=verts,
+        faces=faces,
+        transform=transform,
+        face_groups={k: tuple(v) for k, v in groups.items()},
+        uv_sets=flat,
     )
 
 

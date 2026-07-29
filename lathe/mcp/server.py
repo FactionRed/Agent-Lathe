@@ -2,9 +2,9 @@
 """
 MCP server for Lathe -- DESIGN.md section 9.
 
-Nine tools, deliberately. A large tool surface drowns the model; a small surface
-plus a rich language does not. The expressive weight sits in the program text
-that `lathe_apply` takes and the expression language `lathe_query` speaks.
+Twelve tools, deliberately few. A large tool surface drowns the model; a small
+surface plus a rich language does not. The expressive weight sits in the program
+text that `lathe_apply` takes and the expression language `lathe_query` speaks.
 
 `lathe_apply` returns the validation report inline. Section 9 makes that point
 explicitly: the agent should see the consequences of a change in the same turn it
@@ -141,6 +141,8 @@ async def lathe_apply(params: ApplyInput) -> str:
         bevel(solid, width, segments=2, min_dihedral=30, only_tags=None, new_tag='bevel')
         union_all([...], name=)   array(factory, count, axis='x', span=, center=True)
         assert_count(selection, expected, label=None)
+        unwrap(solid, resolution=1024, texel_density=None, max_angle=66)
+        import_glb(path, up='y', weld=True, tag='imported')  reads a .glb as a Solid
         mm(x)
 
     Solid methods:
@@ -728,6 +730,181 @@ async def lathe_view(params: ViewInput) -> str:
         return json.dumps(info, indent=2)
     except Exception as exc:
         return _fail(exc)
+
+
+# ------------------------------------------------------------------- import
+
+class ImportInput(BaseModel):
+    """Input for lathe_import."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    path: str = Field(
+        ..., description="Path to a .glb or .gltf file to read.",
+        min_length=3, max_length=1024)
+    up: str = Field(
+        default="y",
+        description=("Up axis of the source file. 'y' is the glTF standard and is "
+                     "almost always right. Use 'z' only if the asset comes back "
+                     "lying on its side."))
+    weld: bool = Field(
+        default=True,
+        description=("Merge vertices that share a position. Leave on: a glTF "
+                     "vertex carries its own normal, so exporters split every "
+                     "seam and an unwelded mesh is never watertight."))
+    commit: bool = Field(
+        default=True,
+        description=("When the geometry is a solid, commit it so the other tools "
+                     "can work on it. Set False to inspect without touching "
+                     "history."))
+    tag: str = Field(
+        default="imported",
+        description="Provenance tag for the committed solid.",
+        min_length=1, max_length=48)
+    view: bool = Field(
+        default=False,
+        description=("Also write an interactive preview. For a mesh that is not a "
+                     "solid this is the only way to look at it, because "
+                     "lathe_view and lathe_observe read committed solids."))
+    profile: Optional[str] = Field(
+        default=None,
+        description="Rule profile for the validation report. Default game_prop_pbr.")
+    branch: Optional[str] = Field(
+        default=None, description="Branch to commit on. Default: a new 'import' branch.")
+
+
+@mcp.tool(
+    name="lathe_import",
+    annotations={"title": "Read a glTF or GLB File",
+                 "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False})
+async def lathe_import(params: ImportInput) -> str:
+    """Read someone else's .glb or .gltf, and say what it actually is.
+
+    Use this to bring in an asset from a marketplace, a scan, another tool, or an
+    earlier export, so it can be measured, validated, viewed, cut into or
+    exported again.
+
+    Read natively -- no Blender, no library. Four things are handled that decide
+    whether an import is usable rather than merely successful:
+
+      * **axes.** glTF is Y-up; Lathe is Z-up. Converted once, globally. An
+        importer that skips this lays the model on its face and raises no error.
+      * **welding.** A glTF vertex carries its own normal, so an exporter splits
+        one corner into several -- a cube arrives with 24 vertices, not 8, and
+        every edge is then a boundary. Welding is what decides whether the asset
+        can be booleaned at all.
+      * **transforms.** Node transforms are composed and baked. A mirrored node
+        has its winding flipped back, or the part returns inside out.
+      * **refusal.** Draco and meshopt compression are named and refused rather
+        than mis-decoded into plausible-looking rubbish.
+
+    Most real assets are *not* solids -- an open shell is normal for anything
+    scanned or sculpted. That is not a failure: the mesh still measures, validates
+    and views. Only booleans, bevel and volume need a solid, and the report says
+    which property failed and by how much.
+
+    Args:
+        params (ImportInput): path, up, weld, commit, tag, view, profile,
+            optional branch.
+
+    Returns:
+        str: What the file contains, what was baked, welded, skipped or refused,
+        the topology counts, then the full validation report -- which runs whether
+        or not the asset is a solid, and names the source material rather than a
+        face index. When it promoted and commit is on, also the commit headline.
+
+    Examples:
+        - "load barrel.glb and tell me if it's game-ready" -> defaults, then read
+          the validation block.
+        - "it came in on its side" -> up='z'.
+        - "why can't I boolean this?" -> read the MESH ONLY reason; it names the
+          boundary or non-manifold edge count.
+        - "let me see it" -> view=true. For a non-solid import that is the only
+          look available, since lathe_view reads committed solids.
+
+    Note:
+        Every other operation here is a pure function of its arguments. This one
+        reads a file, so a commit that imports replays identically only while that
+        file is unchanged. The report carries the content hash for that reason.
+    """
+    try:
+        from ..io import glb as gio
+        imp = await _off_loop(gio.read, params.path, weld=params.weld,
+                              up=params.up, tag=params.tag)
+    except Exception as exc:
+        return _fail(exc)
+
+    out = [imp.summary()]
+
+    # Validate the *mesh*, not the promoted solid, and do it whether or not it
+    # promoted. The mesh adapter keeps the material face groups and the UV sets,
+    # so a finding says `barrel.M_metal_bands` rather than `face 4471` -- and an
+    # open shell, which is the common case, still gets the full rule report
+    # instead of nothing.
+    out.append("")
+    try:
+        asset = vmesh.Asset(
+            mesh=vmesh.from_mesh(imp.mesh, uv_sets=imp.uv_sets),
+            spec=vmesh.EmitSpec(profile=params.profile or "game_prop_pbr"))
+        out.append(str(vengine.check(asset, params.profile)).rstrip())
+    except Exception as exc:
+        out.append("  validation could not run: %s" % exc)
+
+    if params.view:
+        try:
+            from ..viewer import write as write_view
+            os.makedirs(OUT_DIR, exist_ok=True)
+            dest = os.path.join(OUT_DIR, "import_%s_preview.html"
+                                % imp.report["file"]["sha256"])
+            info = await _off_loop(write_view, imp.mesh, dest,
+                                   title=imp.mesh.name)
+            out += ["", "  preview   %s  (%d bytes, open in any browser)"
+                    % (info["path"], info["bytes"])]
+        except Exception as exc:
+            out.append("  preview could not be written: %s" % exc)
+
+    if not imp.is_solid:
+        out += [
+            "",
+            "  Not committed: history holds solids, and this is not one. Nothing "
+            "is lost -- the report above is the full picture.",
+            "  To make it a solid, close the boundary in the tool that made it, "
+            "or re-export it watertight.",
+        ]
+        return "\n".join(out)
+
+    if not params.commit:
+        out.append("\n  Not committed (commit=false).")
+        return "\n".join(out)
+
+    # Committed as a *program*, so it replays like anything else and the history
+    # model needs no special case for imports.
+    program = (
+        "# imported from %s\n"
+        "# sha256 %s -- this program reproduces only while that file is unchanged\n"
+        "result = import_glb(%r, up=%r, weld=%r, tag=%r, name=%r)\n"
+        % (os.path.basename(imp.path), imp.report["file"]["sha256"],
+           imp.path, params.up, params.weld, params.tag, imp.mesh.name))
+    try:
+        commit, solid, _diff, _new = await _off_loop(
+            WS.apply, program, "import %s" % os.path.basename(imp.path),
+            params.branch or "import")
+    except Exception as exc:
+        return "\n".join(out + ["", "  the import would not commit:", _fail(exc)])
+
+    out += ["", _headline(solid, commit), "  on branch %s" % commit.branch, ""]
+    try:
+        out.append(_check(commit.id))
+    except Exception as exc:
+        out.append("  validation could not run: %s" % exc)
+    out += [
+        "",
+        "  next: lathe_query to measure it, lathe_view to orbit it, lathe_apply "
+        "to cut into it",
+        "        (the program above is the parent -- extend it, do not replace "
+        "it).",
+    ]
+    return "\n".join(out)
 
 
 # -------------------------------------------------------------------- setup

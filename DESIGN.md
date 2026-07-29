@@ -375,6 +375,7 @@ expression.
 | W201 | warn  | Origin not at declared reference point |
 | W202 | warn  | UV padding below the table for target resolution |
 | W203 | warn  | Non-power-of-two texture dimensions |
+| W206 | warn  | Collapsed UV area — real surface sampling a single texel |
 | W204 | warn  | LOD chain missing a step, or reduction ratio off target |
 | W205 | warn  | Silhouette deviation between LOD*n* and LOD0 above threshold |
 | W302 | warn  | Texel density variance outside target ±10% |
@@ -439,11 +440,12 @@ rich language does not.
 | `compare(refs)` | contact-sheet grid across commits |
 | `library(query)` | parametric component search (§11) |
 | `export(target, path)` | file + final gate report |
+| `import(path)` | *added in build* — read a .glb/.gltf, report and validate it |
 
 `apply` returning the validation report inline is important: the agent sees consequences
 in the same turn it makes the change, rather than needing to remember to look.
 
-**Built** — `lathe/mcp/`, nine tools over stdio, 26 tests. Three notes from building it.
+**Built** — `lathe/mcp/`, twelve tools over stdio, 46 wire tests. Four notes from building it.
 
 `library()` is **omitted rather than stubbed**, because the parametric component library it
 searches does not exist. A tool that always returns nothing is worse than a tool the agent
@@ -459,6 +461,33 @@ one and `box` does not. The seam is visible from the outside, which is a reason 
 not a sandbox** — builtins are present. Acceptable for a local stdio server whose caller
 could already run Python, and not acceptable over a network transport. Stated in the tool
 description rather than left for someone to discover.
+
+`import` was **not in this table originally**, and its absence was a real gap: a tool that
+can only make assets it authored cannot look at the asset you already have. Two decisions
+came out of building it, and both were forced by measurement rather than chosen.
+
+**An import is a Mesh first and a Solid only if it earns it.** A `.glb` in the wild is
+usually not watertight — an open shell is the *normal* state of anything scanned or
+sculpted. §3 already made the neutral polygonal `Mesh` the type that can hold geometry
+Manifold cannot represent, and import is the case that vindicates that choice rather than
+merely justifying it. Every Tier 1 probe and every §7 rule reads the mesh whether or not it
+is a solid; only booleans, bevel and volume need the kernel. The reason text names *which*
+property failed, because `Error.NotManifold` is true and tells an agent nothing it can act
+on.
+
+**A promoted import carries one tag, not one per material.** Tempting to map each glTF
+material onto a §5.2 part and keep the split. It would be a lie: rebuilding a Manifold from
+a triangle soup gives it a single original id, so the material structure would evaporate at
+the first boolean — exactly the silent provenance drift §13 records. So the Mesh keeps the
+material parts and the Solid does not pretend to. The verifier reads the *mesh*, which is
+how a finding on an imported asset can still say `barrel.M_metal_bands` instead of
+`face 4471`.
+
+`import` also breaks the purity rule in §2, and is the only thing here that does. Every
+other operation is a function of its explicit arguments; this one reads a file. A commit
+that imports therefore replays identically only while that file is unchanged, so the report
+carries the file's content hash and the generated program text records it in a comment.
+Naming the exception is better than quietly having it.
 
 ## 10. What stays human
 
@@ -593,6 +622,30 @@ Defaults do the real work here.
 caps the system at static-prop grade until remeshing matures. Accept the cap, state it,
 and do not sell character work in Phase 1–4.
 
+**Baking scales with how much of the mesh the detail was.** `lathe/bake/` moves a modelled
+bevel into a normal map, which is the production answer to the W302 spread above. It worked
+spectacularly on one asset and did nothing for another, and the difference is instructive: the
+chair's bevel was 87% of its triangles, so the low poly is 308 against 2,324 and the density
+spread falls from 418% off target to 17%. The bowl's bevel was 18%, so its low poly is 82% of
+the original and the warning is unchanged — because that asset's density problem was never the
+bevel. It is the pole triangles of its spheres and revolves.
+
+The general lesson: a bake is not a fix for bad UV density, it is a fix for *detail carried in
+geometry*. Diagnose which one you have first. The verifier's per-island evidence is what makes
+that distinguishable.
+
+**A rule that never runs is not a rule.** E106, W202, W203 and W302 shipped with the verifier
+and reported *not checked* on every asset for as long as nothing produced a UV set. They were
+tested — against fixtures built by hand for the purpose — and that was enough to prove the
+logic and not enough to prove anything was connected to it. Wiring an unwrapper in
+immediately produced a genuine E106 on the chair, a W302 spread of 5.1 to 26.5 px/cm, and a
+gap with no owner at all: a *collapsed* UV island does not overlap anything, so E106 stayed
+silent and nothing else spoke. That became W206.
+
+The lesson generalises past UVs. `needs=` makes a rule skip safely, which is the right
+behaviour and also a very quiet failure mode. A profile where a third of the rules have never
+seen production data reads as passing.
+
 **Coincident contact is not connection.** Two solids meeting exactly on a shared plane come
 back as separate components, because the contact has measure zero. The villager's boots met
 its shins precisely on z=0.075 and the figure assembled in four pieces. Assembly helpers
@@ -611,6 +664,52 @@ hard to explain to an agent.
 **Renders over-trusted.** Agents will reach for `observe` when `query` would be faster and
 more reliable. Mitigate in tool descriptions and by making Tier 1 output genuinely
 excellent.
+
+**A clean textual merge can still be a semantic conflict.** W206 and the two newest profiles
+(`hard_surface_subdiv`, `film_usd`) were written on separate branches. Both touched
+`profiles.py`, in different places, so git merged them without a murmur — and the result was
+wrong. The new profiles listed `E106` and `W202` but not `W206`, because `W206` did not exist
+when they were written. `rules/uv.py` divides UV defects into exactly three: islands that
+intersect, islands merely too close, and UV area that has collapsed. A profile holding two
+thirds of a partition has a hole, and the hole is *silent* — a collapsed island simply goes
+unreported and the profile still says PASS.
+
+Nothing in either branch's tests could have caught it, because neither branch was wrong. Only
+the combination was. Review would not reliably catch it either: the diff shows two additive
+changes to a list of string literals.
+
+The fix is not to add the missing code, or not only that. It is an invariant asserted over
+*every registered profile* — any profile selecting part of the UV partition must select all of
+it — so the next rule or profile added on a branch cannot reopen the gap. That generalises: a
+rule set that grows on one axis while profiles grow on another needs structural tests over the
+cross product, not per-item tests on each side. §7's claim that "a new profile is data" holds,
+but data still has invariants.
+
+**Reading a file is a new trust boundary, and it arrived late.** Everything before import
+consumed only what this system generated. A `.glb` from a marketplace is attacker-controlled
+data, and three things in it reach places that were never designed for hostile input.
+
+*Buffer URIs.* A `.gltf` may reference external buffers by path. Resolved naively, opening a
+model becomes an arbitrary-file-read primitive — so absolute paths, drive paths, `..`, and
+percent-encoded `..` are refused rather than resolved. The percent-encoded case is the one
+worth calling out: unquoting after the containment check instead of before it defeats the
+check entirely, and both orders look equally reasonable in the diff.
+
+*Names.* Material and node names flow into report text, §5.2 tags, and the HTML viewer.
+Sanitising at each use would eventually miss one, so names are stripped to a safe character
+set at the reader, once.
+
+*The viewer's payload.* Auditing that path found a latent hole that predated import:
+`json.dumps` does not escape `<`, and the viewer drops its data straight into a `<script>`
+block. A tag named `</script><script>…` would have executed. Harmless while every tag came
+from the agent's own program, and a live injection the moment tags came from a stranger's
+file. The fix is one line, but the *lesson* is that a data path's safety depends on where its
+input comes from, so widening the input can break code that has not changed. Nothing in the
+test suite would have caught it; there is now a test that would.
+
+*Compressed geometry.* Draco and meshopt are refused by name. A reader that ignores an
+unsupported compression extension does not error, it emits plausible-looking rubbish, which
+is precisely the class of silent failure §1 indicts.
 
 **Adoption.** Studios have pipelines. The wedge is the verifier and the export hygiene —
 those provide value even to teams that never let an agent model anything, which makes the
@@ -640,6 +739,16 @@ system adoptable before it is trusted.
    exist if the representation cannot hold an n-gon*. Both packages import together today,
    so this is a scheduled refactor rather than a bug, but it should land before either
    grows a third consumer.
+
+   **Import made the cost concrete.** Reading a `.glb` produces a perception `Mesh`, and
+   verifying it needs an `AssetMesh`, so the work needed a *third* adapter — `from_mesh`,
+   alongside `from_manifold` and `from_bpy_mesh` — whose entire job is to restate the same
+   arrays in the other shape. It is short and duck-typed, so `verify` still imports nothing
+   from `perceive` and the dependency arrow keeps pointing one way. But an adapter written
+   only because two internal types disagree is the clearest evidence yet that this is worth
+   fixing, and the count of them is now the metric. Import also confirms the polygonal
+   choice is the right target: a glTF primitive is triangles, so a merged type loses
+   nothing on the way in, while the verifier keeps the n-gon it needs on the way out.
 7. Does the bevel decision survive curved input? Every fixture in the spike is
    axis-aligned planar boxes, because the geometric referee cannot grade a fillet on a
    cylinder or revolve. That is exactly where OCCT fillets fail in practice and where

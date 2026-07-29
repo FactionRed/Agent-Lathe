@@ -55,6 +55,16 @@ def _limb(length, r_far, r_near, segments=16, tag="skin"):
                       tag=tag)
 
 
+def build_pair(**kw):
+    """No pair. The villager carries no bevel, so low and high are the same mesh
+    and there is no detail to bake down. A real low would come from decimation or
+    retopology, neither of which exists here -- and section 10 already says the
+    honest path for a figure is a template basemesh, not generation."""
+    raise NotImplementedError(
+        "the villager has no bevel, so there is no high-to-low pair to bake. "
+        "Reducing it would need decimation or retopology.")
+
+
 def build(height=HEIGHT):
     s = height / 1.70  # single scale factor, so proportions stay fixed
 

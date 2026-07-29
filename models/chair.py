@@ -23,7 +23,14 @@ MATERIALS = {
 
 
 def build(seat_h=0.45, seat_w=0.42, seat_d=0.40, leg=0.040, slat_n=3,
-          back_h=0.90, bevel_w=mm(2.0)):
+          back_h=0.90, bevel_w=mm(2.0), bevel=True):
+    """With bevel=False this is the low poly: same silhouette, flat arrises.
+
+    That pair is what a bake needs. The bevel is the only difference between them,
+    which is exactly the detail a normal map is for -- and carrying it in texture
+    rather than geometry is what removes the chart slivers behind the W302 warning
+    these assets used to report.
+    """
     # -- parameters as expressions, so one edit moves everything that depends
     seat_t = mm(35)
     inset = mm(28)
@@ -97,9 +104,15 @@ def build(seat_h=0.45, seat_w=0.42, seat_d=0.40, leg=0.040, slat_n=3,
     # Bevel every sharp edge. Real timber has no zero-radius arris, and the
     # wrapper enforces the non-inheriting tag default, so the assertions above
     # still hold afterwards.
-    chair = L.bevel(chair, width=bevel_w, segments=2, min_dihedral=55,
-                    min_length=mm(4))
+    if bevel:
+        chair = L.bevel(chair, width=bevel_w, segments=2, min_dihedral=55,
+                        min_length=mm(4))
     return chair
+
+
+def build_pair(**kw):
+    """(low, high) for baking. Same parameters, bevel off and on."""
+    return build(bevel=False, **kw), build(bevel=True, **kw)
 
 
 if __name__ == "__main__":

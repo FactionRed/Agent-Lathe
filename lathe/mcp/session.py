@@ -68,6 +68,10 @@ def _api_namespace() -> Dict[str, Any]:
     }
     for name in getattr(B, "__all__", []):
         ns[name] = getattr(B, name)
+    # Imported here rather than at module scope: io depends on build, so the
+    # arrow has to keep pointing one way.
+    from ..io.glb import import_glb
+    ns["import_glb"] = import_glb
     return ns
 
 

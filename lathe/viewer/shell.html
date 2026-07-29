@@ -483,12 +483,18 @@
       ["edges", fmt(s.edges)],
       ["faces", fmt(s.faces)],
       ["components", fmt(s.components)],
-      ["genus", fmt(s.genus)],
+      // Genus is undefined unless the surface is closed and orientable, so it
+      // arrives as a string in that case rather than a confident 0.
+      ["genus", typeof s.genus === "number" ? fmt(s.genus) : s.genus],
       ["manifold", wt],
       ["extent", s.size],
       ["volume", s.volume],
       ["area", s.area],
     ];
+    // Only when there is something to say. An imported mesh is usually open, and
+    // "open" alone does not tell you whether it is one missing cap or shredded.
+    if (s.boundary_edges) rows.push(["boundary edges", fmt(s.boundary_edges)]);
+    if (s.nonmanifold_edges) rows.push(["non-manifold edges", fmt(s.nonmanifold_edges)]);
     el("stats").innerHTML = rows.map(([k, v]) =>
       `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("");
     el("parts").innerHTML = RAW.tags.map((t, i) => {

@@ -21,6 +21,7 @@ from ..engine import (
     load_rules,
     register_profile,
     rule,
+    rule_table,
     run,
 )
 from ..findings import ERROR, NOTE, WARN
@@ -42,7 +43,9 @@ class TestRegistry(unittest.TestCase):
     def test_approximate_rules_declare_it(self):
         """A rule that only estimates has to say so, or the report overclaims."""
         approximate = {c for c, s in RULES.items() if s.is_approximate}
-        self.assertEqual(approximate, {"W202", "W302"})
+        # W206 cannot tell a deliberately unmapped surface from an accidental
+        # collapse, so it declares itself approximate too.
+        self.assertEqual(approximate, {"W202", "W206", "W302"})
         for code in approximate:
             self.assertGreater(len(RULES[code].approximation), 40)
 
@@ -171,6 +174,34 @@ class TestProfileSelection(unittest.TestCase):
             overrides={"E101": {"allow_boundary": True}},
         )
         self.assertNotIn("E101", report.codes)
+
+    def test_every_profile_checking_uv_checks_all_of_it(self):
+        """E106, W202 and W206 partition UV layout defects between them.
+
+        rules/uv.py divides the space explicitly: E106 owns islands that
+        intersect, W202 owns islands merely too close, W206 owns UV area that has
+        collapsed. A profile that selects two thirds of a partition has a hole in
+        it, and the hole is invisible -- a collapsed island simply goes unreported
+        and the profile still says PASS.
+
+        This is a real defect that reached main, not a hypothetical. W206 and the
+        two newest profiles were written on separate branches; git merged both
+        cleanly because they touch different lines, and the *combination* was
+        incomplete in a way neither side could have caught. A structural
+        invariant is the only thing that catches that class of gap, so it is
+        asserted over every registered profile rather than per profile.
+        """
+        partition = {"E106", "W202", "W206"}
+        for name in sorted(PROFILES):
+            codes = {r.code for r in rule_table(name)}
+            present = codes & partition
+            if not present:
+                continue  # a profile may legitimately ignore UVs entirely
+            self.assertEqual(
+                present, partition,
+                "profile %r selects %s but not %s -- UV defects are partitioned "
+                "between all three, so the missing code is a silent hole"
+                % (name, sorted(present), sorted(partition - present)))
 
     def test_character_profile_tightens_origin_tolerance(self):
         asset = fixtures.clean_solid()

@@ -43,6 +43,47 @@ or a rig.
 The chair and the bowl have no such asterisk. Hard surface and revolved forms
 are what this kernel is actually good at.
 
+## UVs
+
+All three are unwrapped with xatlas and packed to a declared texel density, so E106, W202,
+W203, W206 and W302 run against real layouts instead of reporting *not checked*. All three
+carry **0 errors**. They also carry warnings that are correct, and worth reading rather than
+silencing:
+
+| Warning | Why it is right |
+|---|---|
+| W302 density variance | Padding and block alignment impose a minimum chart size, so a sliver gets more texels than its area asks for. These meshes carry their bevels in *geometry*, which makes slivers numerous. The production fix is to bake the bevel into a normal map, not to widen the tolerance. |
+| W202 padding | xatlas pads chart bounding *rectangles*; the verifier measures outline to outline. A concave chart nests into a neighbour's notch, so outlines come closer than the rectangle gap. Measured at 4, 6, 8 and 12 px padding — reported at all of them. A polygon packer would fix it; a bigger margin does not. |
+| W206 collapsed islands | Tiny bevel charts whose UV area rounds to nothing. Same root cause as W302. |
+
+E106 *was* firing on the chair: one chart wrapped far enough around a bevel to overlap
+itself. A chart that folds is an under-split chart, so the fix was a tighter chart cost —
+0.35 instead of the looser default, 101 charts instead of 84, fold gone. Raising padding did
+not help, which is what pointed at chart splitting rather than packing.
+
+## Baking, and where it helps
+
+```bash
+python models/bake_all.py     # build the pair, unwrap the low, bake the high onto it
+```
+
+`build_all.py` emits the bevelled mesh. `bake_all.py` emits the low poly plus maps, which is
+what ships in an engine. Two scripts because they answer different questions.
+
+| Asset | Low | High | Ratio | Effect |
+|---|---|---|---|---|
+| chair | **308** tris | 2,324 | 7.55:1 | W302 from 418% off target to 17% |
+| bowl | 4,822 tris | 5,848 | 1.21:1 | essentially none |
+
+**Baking helps in proportion to how much of the mesh the detail was.** The chair's bevel was
+87% of its triangles, so moving it into a normal map is transformative. The bowl's was 18%, so
+it barely moves — and the bowl's density problems were never the bevel. They come from the
+pole triangles of its spheres and revolves, which no amount of baking addresses.
+
+That is worth knowing before reaching for a bake as a general fix. The verified normal map
+shows it plainly: a neutral lavender field with a bright and dark lip on each chart, which is
+the arris the low poly no longer has.
+
 ## What building these found
 
 **Assertions earn their place immediately.** Two of the three assets failed a

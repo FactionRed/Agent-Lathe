@@ -200,9 +200,17 @@ class TestInterpreterRejections(unittest.TestCase):
                        'assert count(e) == 99\nemit "X" {}')
         self.assertIn("actual", msg)
 
-    def test_uv_is_refused_rather_than_silently_ignored(self):
-        msg = self.bad('let b = box(1m,1m,1m)\nuv b by angle_seams()\nemit "X" {}')
-        self.assertIn("not implemented", msg)
+    def test_unknown_uv_method_is_named(self):
+        # `uv` used to be refused outright as unimplemented. It works now, so what
+        # remains worth guarding is that a method nobody wrote is not silently
+        # accepted.
+        msg = self.bad('let b = box(1m,1m,1m)\nuv b by lightning()\nemit "X" {}')
+        self.assertIn("angle_seams", msg)
+
+    def test_uv_rejects_a_bare_number_for_the_threshold(self):
+        msg = self.bad('let b = box(1m,1m,1m)\n'
+                       'uv b by angle_seams(threshold = 66)\nemit "X" {}')
+        self.assertIn("angle", msg)
 
     def test_program_with_no_solid(self):
         msg = self.bad("param a = 1mm")
@@ -247,6 +255,23 @@ class TestInterpreterBuilds(unittest.TestCase):
                 'let b = box(0.2m,2m,0.2m, tag = "cut")\n'
                 'let c = a - b\nemit "X" {}')[0]
         self.assertEqual(set(s.tags.values()), {"body", "cut"})
+
+    def test_uv_statement_produces_a_uv_set(self):
+        s = run('let b = box(200mm, 200mm, 200mm)\n'
+                'uv b by angle_seams(threshold = 66deg, resolution = 1024)\n'
+                'emit "X" {}')[0]
+        self.assertTrue(s.has_uv)
+        self.assertEqual(s.uv.shape, (s.n_tris, 3, 2))
+
+    def test_uv_statement_honours_a_density_target(self):
+        import lathe.build as LB
+        s = run('let b = box(200mm, 200mm, 200mm)\n'
+                'uv b by angle_seams(resolution = 1024, texel_density = 5.12)\n'
+                'emit "X" {}')[0]
+        d = LB.texel_density(s, 1024)
+        # Padding imposes a floor on small charts, so only the low end can be
+        # expected to land on target -- see uvmap.unwrap's W302 note.
+        self.assertAlmostEqual(d["min"], 5.12, delta=0.3)
 
     def test_origin_bottom_center(self):
         s = run('let b = box(1m,1m,1m) @ origin(bottom_center)\nemit "X" {}')[0]

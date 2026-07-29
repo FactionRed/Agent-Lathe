@@ -30,8 +30,8 @@ reasons rather than prompt-quality ones.
 - **Cardinality assertions.** `assert count(rim) == 96` turns a silent selector mismatch into
   a loud error naming the assumption that broke.
 - **Taste converted to assertions.** An agent cannot have judgement, but it can satisfy a
-  spec. 13 rules, each with a named code, the offending entity, numeric evidence, and an
-  executable repair.
+  spec. 14 rules across five profiles, each with a named code, the offending entity, numeric
+  evidence, and an executable repair.
 - **Perception as a subsystem.** Numeric probes first at 30–90 µs. Renders as contact sheets,
   never one flattering angle.
 
@@ -45,21 +45,33 @@ reasons rather than prompt-quality ones.
 
 - Authoring kernel: primitives, booleans, revolve, extrude, arrays, transforms.
 - Bevel through headless bmesh, with the non-inheriting tag default enforced in the wrapper.
-- Verifier: E101–E108 plus W201, W202, W203, W302, N401, across all five §7 profiles —
+- Verifier: E101–E108 plus W201, W202, W203, W206, W302, N401, across all five §7 profiles —
   `game_prop_pbr`, `character_skinned`, `mobile_vr`, `hard_surface_subdiv`, `film_usd`.
+- UV unwrapping via xatlas, packed to a declared texel density, so the UV rules run on real
+  layouts rather than reporting *not checked*.
+- High-to-low baking of normal and AO maps, with cage extrusion derived from the subject's own
+  size and Flip Y switched by target engine. Moves a bevel out of geometry and into texture:
+  the chair drops from 2,324 triangles to **308**, and its density spread from 418% off target
+  to 17%.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.
+- **Import: `.glb` and `.gltf` read natively** — no Blender, no library. glTF is Y-up and
+  splits a vertex at every seam, so a cube arrives with 24 vertices and every edge is a
+  boundary; welding and the axis conversion are what decide whether an import can be
+  booleaned at all. Draco and meshopt are refused by name rather than mis-decoded into
+  plausible-looking rubbish.
 - **The `.lathe` language**: `600mm` and `0.6m` unify, and `box(600, 600, 600)` fails to
   compile. Units are part of the type, so the metres-versus-millimetres bug cannot be written.
 - **Interactive preview**: one self-contained HTML file — full orbit camera, adjustable
   lighting rig, four shading modes, and live vertex/polygon statistics with a per-tag
   breakdown. No library, no network, no Blender.
-- **MCP surface: eleven tools**, so an agent can author, measure, look, validate, branch,
-  compare and export without anyone writing Python. See [lathe/mcp/](lathe/mcp/README.md).
+- **MCP surface: twelve tools**, so an agent can author, import, measure, look, validate,
+  branch, compare and export without anyone writing Python. See
+  [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 315 tests pass. Checked against closed-form truth, not smoke.
+- 481 tests pass. Checked against closed-form truth, not smoke.
 
 ## What is missing
 
@@ -69,8 +81,9 @@ Stated plainly, because the gap decides whether this is useful to you.
   Python against the API.
 - **No unit types.** §4.1 wants a bare `600` to be a type error. Today it is float metres plus
   an `mm()` helper.
-- **No UVs, textures or baking.** Four UV and texture rules report *not checked*, so about a
-  third of `game_prop_pbr` is untested against real data.
+- **No LOD chain.** W204 and W205 need a chain and a silhouette comparison, and nothing
+  generates one. Reduction would need decimation or retopology.
+- **No component library**, so §9's `library()` tool is omitted rather than stubbed.
 - **The DSL covers authoring, not everything.** `.lathe` has no loops and no user functions,
   so procedural work still goes through the Python escape hatch — where a bare `600` is once
   again a silent bug. The two paths differ in safety too: the DSL interpreter is an AST walker
@@ -91,7 +104,7 @@ Needs Python 3.12, `manifold3d`, `numpy`, `Pillow`, and Blender 5.2 for bevel an
 pip install manifold3d numpy pillow
 python models/build_all.py               # build, verify, probe and render all three
 python models/build_all.py --no-render   # skip Blender, keep the checks
-python -m lathe.verify.tests             # 103 tests
+python -m lathe.verify.tests             # 104 tests
 python -m pytest lathe/perceive/tests -q # 172 tests
 ```
 
@@ -106,10 +119,10 @@ Set `LATHE_BLENDER` if Blender is not on `PATH`.
 | `lathe/verify/` | Rule engine and profiles |
 | `lathe/perceive/` | Numeric probes and structural summaries |
 | `lathe/render/` | Contact sheets, mattes, wireframes |
-| [`lathe/mcp/`](lathe/mcp/README.md) | The eleven-tool agent surface |
+| [`lathe/mcp/`](lathe/mcp/README.md) | The twelve-tool agent surface |
 | `lathe/lang/` | The `.lathe` language: units, parser, evaluator |
 | `lathe/viewer/` | Self-contained interactive WebGL preview |
-| `lathe/io/` | Export |
+| [`lathe/io/`](lathe/io/README.md) | Export, and the native glTF reader |
 | `models/` | The three test assets and the build runner |
 | `prototype/` | Kernel spikes that settled the design questions |
 

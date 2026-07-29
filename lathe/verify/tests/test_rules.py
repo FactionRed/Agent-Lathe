@@ -88,7 +88,8 @@ class TestCleanAssets(unittest.TestCase):
         report = report_for("clean_solid")
         self.assertEqual(report.findings, ())
         self.assertEqual(
-            sorted(s.code for s in report.skipped), ["E106", "W202", "W203", "W302"]
+            sorted(s.code for s in report.skipped),
+            ["E106", "W202", "W203", "W206", "W302"]
         )
         for skip in report.skipped:
             self.assertTrue(skip.reason, "a skip without a reason is a silent pass")
