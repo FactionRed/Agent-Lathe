@@ -15,6 +15,7 @@ Everything here is a pure function of its arguments.
 
 from __future__ import annotations
 
+import sys
 from typing import Iterable, Sequence
 
 ARROW = "→"
@@ -30,11 +31,21 @@ _ASCII_MAP = {
     "·": "-",
     "≈": "~",
     "⊂": "in",
+    "∩": "&",
     "Δ": "d",
     "✗": "FAIL",
     "⚠": "WARN",
     "✓": "OK",
+    "—": "--",
+    "–": "-",
+    "…": "...",
+    "≠": "!=",
 }
+
+# Every glyph the layer is allowed to emit. A console that can take all of them
+# gets the typographic form; one that cannot gets the fold, all or nothing --
+# half-folded output is harder to read than either.
+_GLYPHS = "".join(_ASCII_MAP)
 
 
 def to_ascii(text: str) -> str:
@@ -42,10 +53,42 @@ def to_ascii(text: str) -> str:
 
     Probe text is UTF-8 by default because it reaches the agent over MCP. Call
     this when the sink is a legacy console codepage.
+
+    Anything not in the table becomes '?' rather than escaping to the sink: a
+    glyph nobody thought about is a formatting wart, not a reason to lose the
+    whole block to UnicodeEncodeError.
     """
     for k, v in _ASCII_MAP.items():
         text = text.replace(k, v)
-    return text
+    return text.encode("ascii", "replace").decode("ascii")
+
+
+def stdout_is_ascii_only() -> bool:
+    """True when `sys.stdout` cannot encode the glyphs above.
+
+    A default Windows console is cp1252, where one `→` raises
+    UnicodeEncodeError and takes the whole build down before the verifier ever
+    runs. Read at call time and never cached: a caller may redirect stdout
+    between two probes, and a test certainly does.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        _GLYPHS.encode(enc)
+    except (UnicodeEncodeError, LookupError):
+        return True
+    return False
+
+
+def for_stdout(text: str, ascii_only: bool | None = None) -> str:
+    """Shape a finished block of probe text for the sink it is headed for.
+
+    `None` asks stdout, which is what a script printing probe output wants.
+    `False` forces the typographic form: text bound for MCP passes it, because
+    that channel is UTF-8 regardless of what the console behind it can encode.
+    """
+    if ascii_only is None:
+        ascii_only = stdout_is_ascii_only()
+    return to_ascii(text) if ascii_only else text
 
 
 def count(n: int) -> str:
@@ -140,6 +183,8 @@ def block(title: str, lines: Iterable[str], right: str | None = None) -> str:
 __all__ = [
     "ARROW",
     "to_ascii",
+    "stdout_is_ascii_only",
+    "for_stdout",
     "count",
     "pct",
     "ratio",

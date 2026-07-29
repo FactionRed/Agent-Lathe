@@ -40,12 +40,17 @@ class Summary:
     fields: dict = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
-    def text(self) -> str:
+    def text(self, ascii_only: bool | None = None) -> str:
+        """The block as one string, folded to ASCII if stdout needs it.
+
+        `title` and `body` stay UTF-8 whatever the console is; see
+        `tier1.Probe.text`.
+        """
         lines = [self.title, *self.body]
         if self.warnings:
             lines.append("")
             lines.extend("  ! " + w for w in self.warnings)
-        return "\n".join(lines)
+        return fmt.for_stdout("\n".join(lines), ascii_only)
 
     def __str__(self) -> str:
         return self.text()
@@ -826,7 +831,8 @@ def lod_summary(chain, target_ratio: float = 0.5, ratio_tol: float = 0.15,
 
 
 def report(mesh: Mesh, texture_px: int = 1024,
-           target_density_px_cm: float | None = None) -> str:
+           target_density_px_cm: float | None = None,
+           ascii_only: bool | None = None) -> str:
     """Every Tier 2 summary that applies to this mesh, in one block."""
     blocks = [topology_summary(mesh)]
     if mesh.material_id is not None:
@@ -838,7 +844,7 @@ def report(mesh: Mesh, texture_px: int = 1024,
             uv_summary(mesh, texture_px=texture_px,
                        target_density_px_cm=target_density_px_cm)
         )
-    return "\n\n".join(b.text() for b in blocks)
+    return "\n\n".join(b.text(ascii_only=ascii_only) for b in blocks)
 
 
 __all__ = [
