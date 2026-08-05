@@ -280,5 +280,153 @@ class TestInterpreterBuilds(unittest.TestCase):
         self.assertAlmostEqual((lo[0] + hi[0]) / 2, 0.0, places=9)
 
 
+# Joint stations: base 0, lower 80, upper 420, head 720 mm up +Z. Each part is
+# authored in rest space where its joint actually is, and the two overlap across
+# the pivot at 420 mm on purpose -- `lathe/pose/README.md` measured why a rig
+# whose parts merely touch comes apart, or welds, depending on the pose.
+ARM = '''
+joint base                     axis Z
+joint lower from base  at (0mm, 0mm, 80mm)  axis Y limit (-90deg, 90deg)
+joint upper from lower at (0mm, 0mm, 340mm) axis Y limit (-140deg, 140deg)
+joint head  from upper at (0mm, 0mm, 300mm) limit (0deg, 0deg)
+
+let arm_lo = box(50mm, 50mm, 360mm).at(z = 250mm)
+let arm_hi = box(45mm, 45mm, 340mm).at(z = 570mm)
+bind lower to arm_lo
+bind upper to arm_hi
+'''
+
+
+class TestArticulation(unittest.TestCase):
+    """`joint`, `bind` and the section 5.4 `solve { }` block."""
+
+    def test_a_rig_is_declared_in_source_order(self):
+        _, it = run(ARM + 'emit "SM_Arm_Steel_LOD0" {}')
+        self.assertEqual([j.name for j in it.joints],
+                         ["base", "lower", "upper", "head"])
+        self.assertEqual(sorted(it.bindings), ["lower", "upper"])
+
+    def test_the_emitted_solid_is_the_posed_rig(self):
+        solid, it = run(ARM + 'emit "SM_Arm_Steel_LOD0" {}')
+        self.assertEqual(solid.name, "SM_Arm_Steel_LOD0")
+        self.assertGreater(solid.n_tris, 0)
+        self.assertEqual(sorted(set(solid.tags.values())), ["body"])
+
+    def test_angles_are_typed_so_a_bare_number_is_rejected(self):
+        """The whole reason the language exists, applied to joints."""
+        with self.assertRaises(UnitError):
+            run('joint a limit (-90, 90)\nlet s = box(1mm,1mm,1mm)\nbind a to s')
+
+    def test_a_param_drives_a_joint_angle(self):
+        """The section 10 loop in one line: a viewer hands back
+        `param tilt = 25deg` and the rig moves."""
+        import math
+
+        _, it = run('param tilt = 25deg\n'
+                    'joint a axis Y limit (-90deg, 90deg) angle tilt\n'
+                    'let s = box(1mm,1mm,1mm)\nbind a to s')
+        self.assertAlmostEqual(math.degrees(it.pose["a"]), 25.0, places=9)
+
+    def test_an_angle_outside_its_limit_is_clamped_not_accepted(self):
+        import math
+
+        _, it = run('joint a axis Y limit (-10deg, 10deg) angle 80deg\n'
+                    'let s = box(1mm,1mm,1mm)\nbind a to s')
+        self.assertAlmostEqual(math.degrees(it.pose["a"]), 10.0, places=9)
+
+    def test_axis_takes_a_name_or_a_vector(self):
+        _, by_name = run('joint a axis Y\nlet s = box(1mm,1mm,1mm)\nbind a to s')
+        _, by_vec = run('joint a axis (0, 1, 0)\nlet s = box(1mm,1mm,1mm)\nbind a to s')
+        self.assertEqual(by_name.joints[0].axis, by_vec.joints[0].axis)
+
+    def test_binding_twice_unions_rather_than_replaces(self):
+        """Placed clear of each other, so the added volume cannot hide inside
+        geometry that was already there."""
+        _, it = run('joint a\n'
+                    'let s = box(10mm, 10mm, 10mm)\n'
+                    'let t = box(10mm, 10mm, 10mm).at(x = 50mm)\n'
+                    'bind a to s\nbind a to t')
+        self.assertAlmostEqual(it.bindings["a"].volume(), 2 * 0.01 ** 3, places=12)
+
+    # -- solve ------------------------------------------------------------
+
+    def test_solve_places_the_tip_on_the_target(self):
+        from lathe import pose as P
+
+        solid, it = run(ARM + 'solve {\n'
+                              '  reach head to (-280mm, 0mm, 460mm) within 1mm\n'
+                              '}\nemit "SM_Arm_Steel_LOD0" {}')
+        self.assertEqual(len(it.solved), 1)
+        self.assertTrue(it.solved[0].converged, it.solved[0].describe())
+        tip = P.positions(it.skeleton(), it.pose)["head"]
+        for got, want in zip(tip, (-0.280, 0.0, 0.460)):
+            self.assertAlmostEqual(got, want, delta=0.001)
+
+    def test_solve_moves_the_geometry_too(self):
+        """The solve is not just bookkeeping -- the emitted solid moves.
+
+        Checked on the bounding box rather than the volume: the parts overlap
+        across the pivot on purpose, so bending the joint changes how much of
+        that overlap the union double-counts. The assembly's volume is
+        *supposed* to move, which `lathe/pose/tests` pins per part instead.
+        """
+        rest = run(ARM + 'emit "X" {}')[0]
+        posed = run(ARM + 'solve { reach head to (-280mm, 0mm, 460mm) }\n'
+                          'emit "X" {}')[0]
+        self.assertAlmostEqual(rest.bbox()[1][2], 0.740, places=3)   # stands up
+        self.assertLess(posed.bbox()[0][0], -0.25)                   # swung to -X
+        self.assertLess(posed.bbox()[1][2], rest.bbox()[1][2])       # and down
+
+    def test_an_unreachable_goal_is_an_error_naming_the_deficit(self):
+        with self.assertRaises(LatheRuntimeError) as cm:
+            run(ARM + 'solve { reach head to (9m, 0mm, 0mm) }\nemit "X" {}')
+        msg = str(cm.exception)
+        self.assertIn("did not converge", msg)
+        self.assertIn("beyond the chain", msg)
+
+    def test_solving_is_deterministic(self):
+        src = ARM + 'solve { reach head to (-280mm, 0mm, 460mm) }\nemit "X" {}'
+        self.assertEqual(run(src)[1].pose, run(src)[1].pose)
+
+    def test_solve_without_a_rig_says_so(self):
+        with self.assertRaises(LatheRuntimeError) as cm:
+            run('solve { reach x to (0mm, 0mm, 0mm) }')
+        self.assertIn("solve needs a rig", str(cm.exception))
+
+    # -- rejections -------------------------------------------------------
+
+    def test_rejections(self):
+        for label, src, want in (
+            ("unknown clause", "joint a wobble 3", "no clause 'wobble'"),
+            ("unknown parent", "joint a\njoint b from nope", "unknown parent"),
+            ("duplicate joint", "joint a\njoint a", "declared twice"),
+            ("reversed limit", "joint a limit (90deg, -90deg)", "is above max"),
+            ("mistyped axis", "joint a axis Q", "unknown axis"),
+            ("bind unknown", "let s = box(1mm,1mm,1mm)\nbind nope to s",
+             "unknown joint"),
+            ("bind non-solid", "joint a\nlet n = 3\nbind a to n", "needs a solid"),
+            ("reach without to", "joint a\nsolve { reach a within 2mm }",
+             "needs `to`"),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaises((LatheRuntimeError, LatheSyntaxError)) as cm:
+                    run(src)
+                self.assertIn(want, str(cm.exception))
+
+    def test_every_rejection_names_a_line(self):
+        """Section 7's shape: what broke, and where."""
+        with self.assertRaises(LatheRuntimeError) as cm:
+            run("joint a\njoint b from nope")
+        self.assertIn("line 2", str(cm.exception))
+
+    def test_a_program_without_joints_is_untouched(self):
+        """The whole feature is additive; every existing program must be
+        byte-identical through it."""
+        solid, it = run('let b = box(1m, 1m, 1m)\nemit "X" {}')
+        self.assertEqual(it.joints, [])
+        self.assertEqual(it.bindings, {})
+        self.assertAlmostEqual(solid.volume(), 1.0, places=9)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

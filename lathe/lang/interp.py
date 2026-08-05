@@ -12,6 +12,19 @@ things DESIGN.md keeps insisting on unmissable:
 
 Errors follow the section 7 shape: what broke, where, and what to do about it.
 
+SOLVE -- the one place the language stops being a pure expression graph. Section
+5.4 asked for exactly that boundary:
+
+    Add a real solver later, behind an explicit `solve { ... }` block, if it
+    earns its keep.
+
+So it is explicit and it is a block. Everything outside it is still evaluated;
+only inside is a value *searched for*. Determinism survives, because the solver
+it calls has no random restarts and a fixed pass cap, so the same program still
+produces the same geometry byte for byte. A goal that does not converge raises
+rather than shrugging -- the program stated where the tip goes, and a pose that
+misses is a failed assertion in exactly the way `assert count(rim) == 96` is.
+
 SECURITY -- and this is the part that matters beyond ergonomics. `Interp.eval` is
 an **AST walker**, not Python's `eval`. Nothing here compiles or executes source:
 a program can only reach the handful of `fn_*` methods below, there is no
@@ -27,6 +40,7 @@ that can be allowed and that one is not.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import build as B
@@ -76,6 +90,15 @@ class Interp:
         self.settings: Dict[str, Dict[str, str]] = {}
         self.materials: Dict[str, Any] = {}   # tag -> Selection
         self.uv_requests: List[Tuple[Any, str, Dict[str, Any]]] = []
+        # Articulation. `joints` is the declared skeleton in source order,
+        # `bindings` the geometry hung off it, and `pose` the angles -- which
+        # start at whatever each joint declared and are then overwritten by any
+        # `solve` block. Keeping the pose as a plain mapping is what lets a
+        # viewer hand one back as `param elbow = 35deg` (DESIGN.md section 10).
+        self.joints: List[Any] = []
+        self.bindings: Dict[str, Solid] = {}
+        self.pose: Dict[str, float] = {}
+        self.solved: List[Any] = []           # IKResult per goal, in order
         self.emit_name: Optional[str] = None
         self.emit_options: Dict[str, Any] = {}
         self.result: Optional[Solid] = None
@@ -96,6 +119,13 @@ class Interp:
     def run(self, prog: S.Program) -> Solid:
         for stmt in prog.statements:
             self.statement(stmt)
+        # A rig assembles last. Every `bind` names geometry that a `let` already
+        # produced, and `solve` may still be adjusting the pose on the final
+        # line, so the posed solid cannot be built until the program is done.
+        if self.bindings:
+            self.result = self.rig().posed(self.pose)
+            if self.emit_name:
+                self.result = self.result.rename(self.emit_name)
         if self.result is None:
             self.die(
                 "the program never produced a solid",
@@ -123,6 +153,12 @@ class Interp:
             self.do_material(node)
         elif isinstance(node, S.UVSet):
             self.do_uv(node)
+        elif isinstance(node, S.Joint):
+            self.do_joint(node)
+        elif isinstance(node, S.Bind):
+            self.do_bind(node)
+        elif isinstance(node, S.Solve):
+            self.do_solve(node)
         elif isinstance(node, S.Emit):
             self.do_emit(node)
         else:
@@ -211,6 +247,187 @@ class Interp:
             "resolution": resolution,
             "texel_density": None if dens is None else V.as_number(dens, "d"),
         }))
+
+    # -- articulation (section 5.4) ---------------------------------------
+
+    _JOINT_CLAUSES = ("from", "at", "axis", "limit", "angle")
+
+    def do_joint(self, node: S.Joint) -> None:
+        """`joint lower from base at (0mm, 0mm, 80mm) axis Y limit (...)`.
+
+        A joint is a declaration, not a value: it does not bind a name in the
+        environment, because `lower` names a hinge in the rig rather than
+        something an expression can be written about.
+        """
+        from ..pose import Joint
+
+        for key in node.clauses:
+            if key not in self._JOINT_CLAUSES:
+                self.die("joint has no clause %r" % key, node,
+                         "Available: %s." % ", ".join(self._JOINT_CLAUSES))
+        if any(j.name == node.name for j in self.joints):
+            self.die("joint %r is declared twice" % node.name, node,
+                     "Joints are addressed by name, so names must be unique.")
+
+        parent = None
+        if "from" in node.clauses:
+            expr = node.clauses["from"]
+            if not isinstance(expr, S.Name):
+                self.die("`from` needs a joint name", node,
+                         "Write: joint elbow from shoulder at (...)")
+            parent = expr.name
+            if not any(j.name == parent for j in self.joints):
+                known = ", ".join(j.name for j in self.joints)
+                self.die("unknown parent joint %r" % parent, node,
+                         ("Declared so far: %s." % known) if known else
+                         "No joint is declared yet — this one is the root.")
+
+        offset = (0.0, 0.0, 0.0)
+        if "at" in node.clauses:
+            offset = self.vec3(node.clauses["at"], "at", node)
+        axis = (0.0, 1.0, 0.0)
+        if "axis" in node.clauses:
+            axis = self.axis_of(node.clauses["axis"], node)
+        limit = (-2.0 * math.pi, 2.0 * math.pi)
+        if "limit" in node.clauses:
+            limit = self.limit_of(node.clauses["limit"], node)
+        angle = 0.0
+        if "angle" in node.clauses:
+            angle = math.radians(
+                V.as_degrees(self.eval(node.clauses["angle"]), "joint angle"))
+
+        try:
+            joint = Joint(name=node.name, parent=parent, offset=offset,
+                          axis=axis, limit=limit)
+            joint.unit_axis()                       # rejects a zero-length axis
+        except LatheError as exc:
+            raise LatheRuntimeError(str(exc), node, self.line_of(node)) from None
+        self.joints.append(joint)
+        self.pose[node.name] = joint.clamp(angle)
+
+    def do_bind(self, node: S.Bind) -> None:
+        if not any(j.name == node.joint for j in self.joints):
+            known = ", ".join(j.name for j in self.joints)
+            self.die("unknown joint %r" % node.joint, node,
+                     ("Declared joints: %s." % known) if known else
+                     "Declare the joint before binding geometry to it.")
+        val = self.eval(node.target)
+        if not (isinstance(val, V.Opaque) and isinstance(val.obj, Solid)):
+            self.die("`bind ... to` needs a solid, got %s" % val.describe(), node)
+        if node.joint in self.bindings:
+            self.bindings[node.joint] = self.bindings[node.joint] + val.obj
+        else:
+            self.bindings[node.joint] = val.obj
+
+    def do_solve(self, node: S.Solve) -> None:
+        """The one place a value is searched for rather than evaluated.
+
+        Section 5.4 asked for it to be explicit and it is: outside this block
+        the language is still a pure expression graph, and inside it every
+        result is deterministic, so the program stays reproducible.
+        """
+        from ..pose import DEFAULT_TOLERANCE, solve
+
+        if not self.joints:
+            self.die("solve needs a rig", node,
+                     "Declare joints first: joint base ... / joint tip from ...")
+        sk = self.skeleton(node)
+        for goal in node.goals:
+            if goal.tip not in sk:
+                self.die("unknown joint %r" % goal.tip, goal,
+                         "Declared joints: %s." % ", ".join(sk.names))
+            target = self.vec3(goal.target, "reach target", goal)
+            tol = DEFAULT_TOLERANCE
+            if goal.within is not None:
+                tol = V.as_metres(self.eval(goal.within), "within")
+            root = self.chain_root(sk, goal.tip)
+            try:
+                hit = solve(sk, root, goal.tip, target, seed=self.pose,
+                            tolerance=tol)
+            except LatheError as exc:
+                raise LatheRuntimeError(str(exc), goal, self.line_of(goal)) from None
+            self.pose.update(hit.pose)
+            self.solved.append(hit)
+            if not hit.converged:
+                # A missed goal is a failed assertion, not a warning: the
+                # program said where the tip goes, and it does not go there.
+                self.die(
+                    "reach %s did not converge — %s" % (goal.tip, hit.describe()),
+                    goal,
+                    "Widen a limit, move the target, or seed the pose with an "
+                    "`angle` clause: a one-sided limit halves the workspace.")
+
+    @staticmethod
+    def chain_root(sk, tip: str) -> str:
+        """The topmost ancestor of `tip`.
+
+        Solving the whole chain to the root is the predictable default: the
+        program named the tip and the target, and nothing in the source says
+        which joints should be held still. A narrower chain is what `limit`
+        exists for.
+        """
+        cur = tip
+        while sk.joint(cur).parent is not None:
+            cur = sk.joint(cur).parent
+        return cur
+
+    def skeleton(self, node: S.Node = None):
+        from ..pose import Skeleton
+
+        try:
+            return Skeleton(tuple(self.joints), name=self.emit_name or "rig")
+        except LatheError as exc:
+            raise LatheRuntimeError(str(exc), node, self.line_of(node)) from None
+
+    def rig(self, node: S.Node = None):
+        from ..pose import Rig
+
+        try:
+            return Rig(self.skeleton(node), dict(self.bindings),
+                       name=self.emit_name or "rig")
+        except LatheError as exc:
+            raise LatheRuntimeError(str(exc), node, self.line_of(node)) from None
+
+    # -- clause helpers
+
+    def vec3(self, expr: S.Node, what: str, node: S.Node) -> Tuple[float, float, float]:
+        val = self.eval(expr)
+        if not (isinstance(val, V.Opaque) and isinstance(val.obj, tuple)
+                and len(val.obj) == 3):
+            self.die("%s needs three lengths" % what, node,
+                     "Write: %s (0mm, 0mm, 80mm)" % what.split()[0])
+        return tuple(V.as_metres(v, what) for v in val.obj)
+
+    def axis_of(self, expr: S.Node, node: S.Node) -> Tuple[float, float, float]:
+        """`axis Y`, or an explicit `(0, 1, 0)` for a hinge off the cardinals."""
+        if isinstance(expr, S.Name) and expr.name in AXES:
+            return AXES[expr.name]
+        if isinstance(expr, S.Name) and expr.name not in self.env:
+            # Caught before `eval`, which would report a bare "unknown name" and
+            # send the reader off to define a param. In an `axis` clause the
+            # likely mistake is a mistyped axis, so say that instead.
+            self.die("unknown axis %r" % expr.name, node,
+                     "Use X, Y or Z, or a three-number vector like (0, 1, 0).")
+        val = self.eval(expr)
+        if isinstance(val, V.Text) and val.s in AXES:
+            return AXES[val.s]
+        if isinstance(val, V.Opaque) and isinstance(val.obj, tuple) and len(val.obj) == 3:
+            return tuple(V.as_number(v, "axis") for v in val.obj)
+        self.die("axis must be X, Y, Z or a three-number vector", node,
+                 "Write: axis Y, or axis (0, 0.7071, 0.7071)")
+
+    def limit_of(self, expr: S.Node, node: S.Node) -> Tuple[float, float]:
+        val = self.eval(expr)
+        if not (isinstance(val, V.Opaque) and isinstance(val.obj, tuple)
+                and len(val.obj) == 2):
+            self.die("limit needs a (min, max) pair of angles", node,
+                     "Write: limit (-90deg, 90deg)")
+        lo, hi = (math.radians(V.as_degrees(v, "limit")) for v in val.obj)
+        if lo > hi:
+            self.die("limit min %s is above max %s"
+                     % (math.degrees(lo), math.degrees(hi)), node,
+                     "Write the smaller bound first: limit (-90deg, 90deg)")
+        return (lo, hi)
 
     def do_emit(self, node: S.Emit) -> None:
         if self.result is None:

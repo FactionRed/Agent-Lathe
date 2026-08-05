@@ -29,6 +29,32 @@ escape hatch, and section 14.3 already says so.
       budget        : { tris_lod0: 1500 }
       texel_density : 5.12
     }
+
+Articulation is three more statements, and section 5.4's reserved block:
+
+    param tilt = 25deg
+
+    joint base                     axis Z
+    joint lower from base  at (0mm, 0mm, 80mm)  axis Y limit (-90deg, 90deg)
+    joint upper from lower at (0mm, 0mm, 340mm) axis Y limit (-140deg, 140deg) angle tilt
+    joint head  from upper at (0mm, 0mm, 300mm) limit (0deg, 0deg)
+
+    bind lower to arm_lower
+    bind upper to arm_upper
+
+    solve {
+      reach head to (-280mm, 0mm, 460mm) within 1mm
+    }
+
+`joint` clauses are `<ident> <expression>` pairs, which is why `from`, `at`,
+`axis`, `limit` and `angle` are not reserved words -- they stay usable as
+parameter names, and a new clause costs nothing in the lexer. A joint declares
+a hinge rather than binding a name, so `lower` addresses the rig and not the
+environment. A welded joint is `limit (0deg, 0deg)` rather than a keyword,
+because the range already says it.
+
+Angles are typed like everything else: `limit (-90, 90)` is a unit error, for
+the same reason `box(600, 600, 600)` is.
 """
 
 from __future__ import annotations
@@ -40,6 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .values import ALL_UNITS
 
 KEYWORDS = {"param", "let", "assert", "emit", "unit", "scene", "mat", "uv",
+            "joint", "bind", "solve",
             "on", "by", "true", "false", "and", "or", "not"}
 
 # Longest first, so >= never lexes as > then =.
@@ -259,6 +286,52 @@ class UVSet(Node):
 
 
 @dataclass
+class Joint(Node):
+    """`joint lower from base at (0mm, 0mm, 80mm) axis Y limit (-90deg, 90deg)`
+
+    The clauses are an open mapping rather than fixed fields on purpose. Every
+    one is optional, order does not matter, and a rig gains attributes over time
+    -- so an unknown clause is a runtime error naming the ones that exist, which
+    beats a parse error that cannot say what it wanted.
+    """
+
+    name: str = ""
+    clauses: Dict[str, Node] = field(default_factory=dict)
+
+
+@dataclass
+class Bind(Node):
+    """`bind lower to lower_arm` -- geometry, authored in rest space."""
+
+    joint: str = ""
+    target: Optional[Node] = None
+
+
+@dataclass
+class Reach(Node):
+    """`reach head to (-280mm, 0mm, 460mm) within 2mm`"""
+
+    tip: str = ""
+    target: Optional[Node] = None
+    within: Optional[Node] = None
+
+
+@dataclass
+class Solve(Node):
+    """DESIGN.md section 5.4's reserved block, finally spent.
+
+    > Add a real solver later, behind an explicit `solve { ... }` block, if it
+    > earns its keep.
+
+    Explicit, so the one place in the language where a value is *searched for*
+    rather than evaluated is visible in the source. Everything outside this
+    block is still a pure expression graph.
+    """
+
+    goals: List[Node] = field(default_factory=list)
+
+
+@dataclass
 class Emit(Node):
     name: str = ""
     options: Dict[str, Node] = field(default_factory=dict)
@@ -340,9 +413,15 @@ class Parser:
                 return self.material()
             if t.text == "uv":
                 return self.uvset()
+            if t.text == "joint":
+                return self.joint()
+            if t.text == "bind":
+                return self.bind()
+            if t.text == "solve":
+                return self.solve()
         self.fail("expected a statement",
-                  "Statements start with param, let, assert, mat, uv, emit, unit "
-                  "or scene.")
+                  "Statements start with param, let, assert, mat, uv, joint, "
+                  "bind, solve, emit, unit or scene.")
 
     def binding(self, which: str) -> Node:
         kw = self.next()
@@ -408,6 +487,83 @@ class Parser:
         self.next()
         node = UVSet(kw.line, kw.col)
         node.target, node.method = target, self.expression()
+        return node
+
+    def joint(self) -> Joint:
+        kw = self.next()
+        name = self.peek()
+        if name.kind != "ident":
+            self.fail("expected a joint name after `joint`",
+                      "Write: joint elbow from shoulder at (0mm, 0mm, -300mm)")
+        self.next()
+        node = Joint(kw.line, kw.col)
+        node.name = name.text
+        node.clauses = self.clauses()
+        return node
+
+    def clauses(self) -> Dict[str, Node]:
+        """`<ident> <expression>` pairs to the end of the line.
+
+        Reading the key as an ordinary identifier rather than a keyword is what
+        keeps `from`, `at`, `axis` and `limit` out of the reserved set -- they
+        stay usable as parameter names, and a new clause costs nothing in the
+        lexer.
+        """
+        out: Dict[str, Node] = {}
+        while self.peek().kind == "ident":
+            key = self.next()
+            if key.text in out:
+                self.fail("clause %r given twice" % key.text, tok=key)
+            out[key.text] = self.expression()
+        return out
+
+    def bind(self) -> Bind:
+        kw = self.next()
+        name = self.peek()
+        if name.kind != "ident":
+            self.fail("expected a joint name after `bind`",
+                      "Write: bind elbow to forearm")
+        self.next()
+        if not (self.peek().kind == "ident" and self.peek().text == "to"):
+            self.fail("expected `to`", "Write: bind elbow to forearm")
+        self.next()
+        node = Bind(kw.line, kw.col)
+        node.joint, node.target = name.text, self.expression()
+        return node
+
+    def solve(self) -> Solve:
+        kw = self.next()
+        node = Solve(kw.line, kw.col)
+        self.eat_op("{")
+        self.eat_newlines()
+        while not self.at_op("}"):
+            node.goals.append(self.goal())
+            self.eat_newlines()
+        self.eat_op("}")
+        return node
+
+    def goal(self) -> Reach:
+        t = self.peek()
+        if not (t.kind == "ident" and t.text == "reach"):
+            self.fail("expected a goal",
+                      "A solve block holds goals: "
+                      "reach head to (0mm, 0mm, 1m) within 2mm")
+        self.next()
+        tip = self.peek()
+        if tip.kind != "ident":
+            self.fail("expected the joint to place after `reach`")
+        self.next()
+        node = Reach(t.line, t.col)
+        node.tip = tip.text
+        cl = self.clauses()
+        for key in cl:
+            if key not in ("to", "within"):
+                self.fail("`reach` has no clause %r" % key,
+                          "Write: reach head to (0mm, 0mm, 1m) within 2mm", tok=t)
+        if "to" not in cl:
+            self.fail("`reach` needs `to`",
+                      "Write: reach head to (0mm, 0mm, 1m)", tok=t)
+        node.target, node.within = cl["to"], cl.get("within")
         return node
 
     def emit(self) -> Emit:
