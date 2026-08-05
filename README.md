@@ -47,6 +47,12 @@ reasons rather than prompt-quality ones.
 - Bevel through headless bmesh, with the non-inheriting tag default enforced in the wrapper.
 - Verifier: E101–E108 plus W201, W202, W203, W206, W302, N401, across all five §7 profiles —
   `game_prop_pbr`, `character_skinned`, `mobile_vr`, `hard_surface_subdiv`, `film_usd`.
+- **Rig rules, on any body plan.** E501–W505 grade an articulated asset: joint limits, reach
+  targets, poses pinned against a bound, root count, and symmetry. Nothing among them knows
+  what a body is — no rule counts limbs, assumes one root, bounds chain depth, or takes
+  "symmetry" to mean bilateral. The plan is *declared* (radial with a fold, bilateral, or
+  none) and checked on its own terms, so a five-armed starfish, a 24-link serpent and a
+  six-legged arthropod are each gradeable and none is measured against a human.
 - UV unwrapping via xatlas, packed to a declared texel density, so the UV rules run on real
   layouts rather than reporting *not checked*.
 - High-to-low baking of normal and AO maps, with cage extrusion derived from the subject's own
@@ -82,7 +88,7 @@ reasons rather than prompt-quality ones.
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 552 tests. Checked against closed-form truth, not smoke. 523 pass without Blender
+- 566 tests. Checked against closed-form truth, not smoke. 537 pass without Blender
   installed; every one of the remaining 29 is gated on the bevel and needs Blender 5.2 on
   `PATH`.
 

@@ -67,10 +67,12 @@ CHARACTER_SKINNED = register_profile(
     Profile(
         name="character_skinned",
         description=(
-            "Deforming character mesh. Section 7 promises edge-loop counts at "
-            "joints, pole placement, quad ratio and symmetry; those rules are not "
-            "implemented, so this profile is the honest subset plus the parameter "
-            "changes a skinned asset needs."
+            "An asset with a rig. Section 7 promises edge-loop counts at joints, "
+            "pole placement and quad ratio; those are not implemented, so this "
+            "profile is the honest subset, the parameter changes a deforming "
+            "asset needs, and the articulation rules. Symmetry is implemented, "
+            "but as a declared body plan rather than the bilateral one section 7 "
+            "assumed -- see W505."
         ),
         rules=(
             "E101",
@@ -87,6 +89,23 @@ CHARACTER_SKINNED = register_profile(
             "W203",
             "W302",
             "N401",
+            # Articulation. Selected here and nowhere else: this is the profile
+            # for an asset that has a rig, and a static prop would only collect
+            # five identical "declares no articulation" lines forever -- the
+            # same nagging film_usd drops E107 to avoid. An articulated prop
+            # that is not a character selects this profile, or derives one: a
+            # profile is a tuple of codes, so that costs a literal.
+            #
+            # Nothing in this block assumes a body plan. E501/W503 are per-hinge,
+            # W504 compares a declared root count rather than assuming one, and
+            # W505 checks the symmetry the program declared -- radial, bilateral
+            # or none. A starfish, a serpent and a hexapod are all gradeable, and
+            # none of them is measured against a human.
+            "E501",  # joint outside its declared limit
+            "E502",  # declared reach target missed
+            "W503",  # pose resting on a limit
+            "W504",  # root joint count
+            "W505",  # declared body plan does not hold
         ),
         params={
             "E101": {"allow_boundary": False},

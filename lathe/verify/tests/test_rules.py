@@ -37,14 +37,23 @@ class TestFixtureTable(unittest.TestCase):
                 )
 
     def test_every_profile_rule_has_a_fixture(self):
-        """A rule with no fixture is a rule nobody has run."""
+        """A rule with no fixture is a rule nobody has run.
+
+        Every registered profile, not just `game_prop_pbr` -- the articulation
+        rules live only on `character_skinned`, and checking one profile would
+        have let them ship unexercised.
+        """
+        from ..engine import PROFILES, load_profiles
+
+        load_profiles()
         covered = set()
         for name in fixtures.EXPECTED:
             covered.update(report_for(name).codes)
-        selected = set(get_profile("game_prop_pbr").rules)
-        self.assertEqual(
-            selected - covered, set(), "profile rules never exercised by a fixture"
-        )
+        for profile in sorted(PROFILES):
+            with self.subTest(profile=profile):
+                selected = set(get_profile(profile).rules)
+                self.assertEqual(selected - covered, set(),
+                                 "profile rules never exercised by a fixture")
 
     def test_severity_grades(self):
         for code, want in (
@@ -399,6 +408,139 @@ class TestWarningsAndNotes(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].data["kind"], "texture")
         self.assertEqual(findings[0].data["suggested"], "T_Crate_Diffuse_D")
+
+
+class TestArticulation(unittest.TestCase):
+    """E501-W505, and the claim that none of them knows what a body is.
+
+    Every assertion here uses a rig no vertebrate would recognise. That is the
+    point: a rule that assumed two arms, one root, or a mirror plane would pass
+    a humanoid suite and fail the first real non-humanoid asset, silently.
+    """
+
+    ART = ("E501", "E502", "W503", "W504", "W505")
+
+    def test_three_unrelated_body_plans_are_all_clean(self):
+        """Five-fold radial, a 24-link chain with no limbs, and a six-legged
+        bilateral. Nothing about them is humanoid and nothing should fire."""
+        for name in ("starfish_rig", "serpent_rig", "hexapod_rig"):
+            with self.subTest(plan=name):
+                report = report_for(name)
+                self.assertEqual(report.findings, (), report.render(ascii_only=True))
+
+    def test_a_joint_past_its_limit_is_an_error(self):
+        f = report_for("joint_over_limit").one("E501")
+        self.assertEqual(f.severity, ERROR)
+        self.assertEqual(f.data["count"], 1)
+        self.assertAlmostEqual(f.data["joints"][0]["over_deg"], 20.0, places=3)
+
+    def test_a_pose_resting_on_a_limit_warns_without_blocking(self):
+        report = report_for("joint_pinned_at_limit")
+        f = report.one("W503")
+        self.assertEqual(f.severity, WARN)
+        self.assertEqual(f.data["count"], 2)
+        self.assertTrue(report.passed, "a pinned joint is not a broken asset")
+
+    def test_a_welded_joint_is_not_reported_as_pinned(self):
+        """limit (0, 0) means the joint does not move. Reporting it as resting
+        on a bound would fire on every tip marker in every rig."""
+        report = report_for("starfish_rig")
+        self.assertNotIn("W503", report.codes)
+
+    def test_a_severed_limb_shows_up_as_a_root_count(self):
+        """The silent one: identical at rest, moves independently once posed."""
+        f = report_for("severed_limb").one("W504")
+        self.assertEqual(f.data["actual"], 2)
+        self.assertEqual(f.data["declared"], 1)
+
+    def test_a_missed_reach_target_reports_the_distance(self):
+        f = report_for("reach_missed").one("E502")
+        self.assertEqual(f.severity, ERROR)
+        self.assertGreater(f.data["targets"][0]["error_mm"], 100.0)
+
+    # -- the body-plan claim, stated as tests -----------------------------
+
+    def test_radial_symmetry_is_checked_on_its_own_terms(self):
+        """A five-armed disc has no mirror plane at all -- reflecting it lands
+        every arm between two others. Only the declared radial plan can grade
+        it, and a broken station is caught."""
+        f = report_for("starfish_broken_arm").one("W505")
+        self.assertEqual(f.data["plan"], "radial")
+        self.assertEqual(f.data["fold"], 5)
+        self.assertAlmostEqual(f.data["joints"][0]["gap_mm"], 30.0, places=3)
+
+    def test_an_odd_fold_is_not_measured_against_a_mirror(self):
+        """The regression this whole design exists to prevent: grading the
+        starfish bilaterally reports breakage on a rig that is perfectly
+        symmetric on its own plan."""
+        from ..mesh import SymmetryDecl
+
+        good = fixtures.starfish_rig()
+        radial = run(good)
+        self.assertNotIn("W505", radial.codes)
+
+        as_bilateral = fixtures.Asset(
+            good.mesh,
+            fixtures.replace(
+                good.spec,
+                articulation=fixtures.replace(
+                    good.spec.articulation,
+                    symmetry=SymmetryDecl(kind="bilateral", normal=(1.0, 0.0, 0.0)))))
+        self.assertIn("W505", run(as_bilateral).codes,
+                      "a 5-fold rig is not bilateral; assuming it were would be "
+                      "the false negative this rule is built to avoid")
+
+    def test_an_asymmetric_plan_is_not_checked_rather_than_failed(self):
+        """A serpent, a tentacle and a lamp arm have no symmetry to satisfy.
+        `none` must produce a skip with a reason, never a warning."""
+        report = report_for("serpent_rig")
+        skips = {s.code: s.reason for s in report.skipped}
+        self.assertIn("W505", skips)
+        self.assertIn("asymmetric", skips["W505"])
+        self.assertNotIn("W505", report.codes)
+
+    def test_limb_count_is_never_counted(self):
+        """Six legs, and no rule has an opinion. The hexapod differs from a
+        quadruped only in how many joints hang off the thorax."""
+        for legs in (4, 6, 8):
+            with self.subTest(legs=legs):
+                report = run(fixtures.hexapod_rig(legs=legs))
+                self.assertEqual(report.findings, (), report.render(ascii_only=True))
+
+    def test_chain_depth_is_never_bounded(self):
+        """A serpent is 24 links and a tentacle could be far more. Nothing may
+        assume a chain is arm-length."""
+        for n in (2, 24, 120):
+            with self.subTest(links=n):
+                report = run(fixtures.serpent_rig(n=n))
+                self.assertEqual(report.findings, (), report.render(ascii_only=True))
+
+    def test_a_radial_rig_of_any_fold_holds(self):
+        for fold in (3, 5, 8, 12):
+            with self.subTest(fold=fold):
+                report = run(fixtures.starfish_rig(fold=fold))
+                self.assertEqual(report.findings, (), report.render(ascii_only=True))
+
+    def test_articulation_is_not_checked_on_a_static_asset(self):
+        """A crate has no rig, and every rule must say so rather than pass."""
+        report = report_for("clean_solid", "character_skinned")
+        skips = {s.code for s in report.skipped}
+        for code in self.ART:
+            with self.subTest(code=code):
+                self.assertIn(code, skips)
+                self.assertNotIn(code, report.codes)
+
+    def test_only_the_rigged_profile_selects_them(self):
+        """A static prop must not collect five identical nags forever -- the
+        same reason film_usd drops E107."""
+        from ..engine import PROFILES, load_profiles
+
+        load_profiles()
+        for name, prof in PROFILES.items():
+            with self.subTest(profile=name):
+                selected = set(prof.rules) & set(self.ART)
+                self.assertEqual(selected,
+                                 set(self.ART) if name == "character_skinned" else set())
 
 
 class TestMultiFault(unittest.TestCase):

@@ -25,7 +25,18 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .mesh import Asset, AssetMesh, BakeSpec, EmitSpec, TextureDecl, Transform
+from .mesh import (
+    ArticulationSpec,
+    Asset,
+    AssetMesh,
+    BakeSpec,
+    EmitSpec,
+    JointDecl,
+    ReachDecl,
+    SymmetryDecl,
+    TextureDecl,
+    Transform,
+)
 
 # The six sides of a box, each as four corners in counter-clockwise order seen
 # from outside, expressed as (x, y, z) selectors over (x0, x1, y0, y1, z0, z1).
@@ -531,7 +542,166 @@ def scale_island(mesh: AssetMesh, group: str, factor: float, uv_set: str = "UV0"
 
 # What each fixture must produce. The test suite reads this table, so the
 # expectation lives next to the geometry that is supposed to violate it.
+# ------------------------------------------------------- E501-W505 rigs
+#
+# Deliberately not a humanoid among them. A rule that quietly assumed two arms,
+# one root, or a mirror plane would pass every test written around a person and
+# fail the first time anyone rigged a starfish, so the fixtures are a radial
+# echinoderm, a serpent, a hexapod and a lamp arm.
+
+
+def _hinge(name, parent=None, offset=(0.0, 0.0, 0.0), axis=(0.0, 1.0, 0.0),
+           limit=(-math.pi / 2, math.pi / 2), angle=0.0) -> JointDecl:
+    return JointDecl(name=name, parent=parent, offset=offset, axis=axis,
+                     limit=limit, angle=angle)
+
+
+def _radial_arms(fold: int = 5, reach: float = 0.25, angle: float = 0.0):
+    """A starfish: `fold` identical arms about +Z, no mirror plane anywhere.
+
+    Bilateral symmetry is undefined for an odd fold -- reflecting a five-armed
+    disc lands every arm between two others -- which is exactly why the plan has
+    to be declared rather than guessed.
+    """
+    joints = [_hinge("disc", axis=(0.0, 0.0, 1.0), limit=(0.0, 0.0))]
+    for i in range(fold):
+        a = 2.0 * math.pi * i / fold
+        joints.append(_hinge("arm_%d" % i, parent="disc",
+                             offset=(reach * math.cos(a), reach * math.sin(a), 0.0),
+                             axis=(-math.sin(a), math.cos(a), 0.0),
+                             limit=(-math.pi / 4, math.pi / 4), angle=angle))
+    return tuple(joints)
+
+
+def starfish_rig(fold: int = 5, **kw) -> Asset:
+    """Clean. Five-fold radial, declared as such, and it holds."""
+    art = ArticulationSpec(
+        joints=_radial_arms(fold),
+        symmetry=SymmetryDecl(kind="radial", axis=(0.0, 0.0, 1.0), fold=fold),
+        roots=1, **kw)
+    return Asset(box_mesh("SK_Starfish_Coral_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def starfish_broken_arm() -> Asset:
+    """W505 only. One arm nudged 30 mm off its radial station.
+
+    A bilateral check would have said nothing useful about this rig at all.
+    """
+    joints = list(_radial_arms(5))
+    j = joints[3]
+    joints[3] = replace(j, offset=(j.offset[0] + 0.03, j.offset[1], j.offset[2]))
+    art = ArticulationSpec(
+        joints=tuple(joints),
+        symmetry=SymmetryDecl(kind="radial", axis=(0.0, 0.0, 1.0), fold=5),
+        roots=1)
+    return Asset(box_mesh("SK_Starfish_Coral_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def serpent_rig(n: int = 24, angle: float = 0.0) -> Asset:
+    """A long unbranched chain: no limbs, no symmetry worth checking.
+
+    Declares `none`, which must produce a *not checked* line rather than a
+    warning it could never satisfy. Also the depth case -- nothing may assume a
+    chain is short.
+    """
+    joints = [_hinge("spine_00", axis=(0.0, 0.0, 1.0), limit=(0.0, 0.0))]
+    for i in range(1, n):
+        joints.append(_hinge("spine_%02d" % i, parent="spine_%02d" % (i - 1),
+                             offset=(0.0, 0.0, -0.04), axis=(0.0, 0.0, 1.0),
+                             limit=(-math.pi / 6, math.pi / 6), angle=angle))
+    art = ArticulationSpec(joints=tuple(joints),
+                           symmetry=SymmetryDecl(kind="none"), roots=1)
+    return Asset(box_mesh("SK_Serpent_Scaled_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def hexapod_rig(legs: int = 6, angle: float = 0.0) -> Asset:
+    """Bilateral, but with six limbs rather than four.
+
+    The count is never checked against anything, which is the point: a rule that
+    knew how many legs a body has would be wrong here and wrong again for an
+    octopus.
+    """
+    joints = [_hinge("thorax", axis=(0.0, 0.0, 1.0), limit=(0.0, 0.0))]
+    for i in range(legs // 2):
+        y = 0.06 - 0.06 * i
+        for side, x in (("L", 0.09), ("R", -0.09)):
+            joints.append(_hinge("leg_%s%d" % (side, i), parent="thorax",
+                                 offset=(x, y, 0.0), axis=(0.0, 1.0, 0.0),
+                                 limit=(-math.pi / 3, math.pi / 3), angle=angle))
+    art = ArticulationSpec(
+        joints=tuple(joints),
+        symmetry=SymmetryDecl(kind="bilateral", normal=(1.0, 0.0, 0.0)),
+        roots=1)
+    return Asset(box_mesh("SK_Hexapod_Chitin_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def joint_over_limit() -> Asset:
+    """E501 only. The elbow-equivalent driven 20 degrees past its upper bound,
+    the way a retarget or a hand-typed pose does it."""
+    joints = list(_radial_arms(5))
+    joints[2] = replace(joints[2], angle=math.pi / 4 + math.radians(20))
+    art = ArticulationSpec(joints=tuple(joints),
+                           symmetry=SymmetryDecl(kind="radial",
+                                                 axis=(0.0, 0.0, 1.0), fold=5),
+                           roots=1)
+    return Asset(box_mesh("SK_Starfish_Coral_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def joint_pinned_at_limit() -> Asset:
+    """W503 only. Two arms resting exactly on their bound, which is what an IK
+    solve that ran out of range leaves behind."""
+    joints = list(_radial_arms(5))
+    joints[1] = replace(joints[1], angle=math.pi / 4)
+    joints[4] = replace(joints[4], angle=-math.pi / 4)
+    art = ArticulationSpec(joints=tuple(joints),
+                           symmetry=SymmetryDecl(kind="radial",
+                                                 axis=(0.0, 0.0, 1.0), fold=5),
+                           roots=1)
+    return Asset(box_mesh("SK_Starfish_Coral_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def severed_limb() -> Asset:
+    """W504 only. One arm lost its parent and became a second root.
+
+    The silent failure this exists for: a rig that looks identical at rest and
+    moves independently of the body the moment anything is posed.
+    """
+    joints = list(_radial_arms(5))
+    joints[2] = replace(joints[2], parent=None)
+    art = ArticulationSpec(joints=tuple(joints),
+                           symmetry=SymmetryDecl(kind="radial",
+                                                 axis=(0.0, 0.0, 1.0), fold=5),
+                           roots=1)
+    return Asset(box_mesh("SK_Starfish_Coral_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
+def reach_missed() -> Asset:
+    """E502 only. A declared target the emitted pose does not arrive at."""
+    art = ArticulationSpec(
+        joints=_radial_arms(5),
+        symmetry=SymmetryDecl(kind="radial", axis=(0.0, 0.0, 1.0), fold=5),
+        roots=1,
+        reach=(ReachDecl(tip="arm_0", target=(0.40, 0.0, 0.0), tolerance=0.002),))
+    return Asset(box_mesh("SK_Starfish_Coral_LOD0", with_uv=False),
+                 solid_spec(profile="character_skinned", articulation=art))
+
+
 EXPECTED: Dict[str, Tuple[str, ...]] = {
+    "starfish_rig": (),
+    "serpent_rig": (),
+    "hexapod_rig": (),
+    "starfish_broken_arm": ("W505",),
+    "joint_over_limit": ("E501",),
+    "joint_pinned_at_limit": ("W503",),
+    "severed_limb": ("W504",),
+    "reach_missed": ("E502",),
     "clean_prop": (),
     "clean_solid": (),
     "fixed_crate": (),

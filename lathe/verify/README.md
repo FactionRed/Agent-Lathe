@@ -1,12 +1,12 @@
 # Verification subsystem — DESIGN.md section 7
 
-**Status:** working. 13 rules, 5 profiles, 103 tests, 21 fixtures. Headless.
+**Status:** working. 19 rules, 5 profiles, 120 tests, 29 fixtures. Headless.
 
 > Convert taste into assertions. An agent cannot have judgment, but it can
 > satisfy a spec. — [DESIGN.md](../../DESIGN.md) §7
 
 ```bash
-python lathe/verify/tests/run.py            # 103 tests, ~5 s
+python lathe/verify/tests/run.py            # 120 tests, ~6 s
 python -m lathe.verify                      # every fixture, one report each
 python -m lathe.verify severed_crate        # one asset
 python -m lathe.verify --json clean_prop    # the machine form
@@ -52,6 +52,17 @@ Severity is the profile's decision, not the rule's. The column below shows the
 | W206 | warn | An island's UV area has collapsed, so real surface samples one texel | uv area, world area, share of the surface |
 | W302 | warn | An island's texel density leaves target ±`tolerance_pct` | px/cm per island, % off target, observed range, allowed band |
 | N401 | note | An object or texture name does not match `[Prefix]_[Name]_[Variant]_[LOD]` | which segment failed and why, plus a corrected name |
+| E501 | error | A declared joint's angle falls outside its declared limit | angle, bound, overshoot in degrees, per offending joint |
+| E502 | error | A declared `reach` target is not where the emitted pose puts the tip | miss in mm per target, against the declared tolerance |
+| W503 | warn | The emitted pose rests exactly on a joint's bound | which joints, which bound, at what angle |
+| W504 | warn | Parentless joint count ≠ `articulation.roots` | actual vs declared, and which joints are roots |
+| W505 | warn | Joint origins do not map onto joint origins under the declared body plan | plan and fold, gap in mm per joint with no counterpart |
+
+**E501–W505 select on `character_skinned` only.** They are the rules for an
+asset that has a rig; on a static prop they would report *not checked* forever,
+which is the same nagging `film_usd` drops E107 to avoid. An articulated prop
+that is not a character selects `character_skinned`, or derives a profile — a
+profile is a tuple of codes, so that costs a literal.
 
 Rule parameters live in the profile, not in the rule body:
 
@@ -70,13 +81,51 @@ Rule parameters live in the profile, not in the rule body:
 | W203 | `require_square=False` |
 | W302 | `tolerance_pct=10.0` |
 | N401 | `object_segments`, `texture_segments`, `default_prefix="SM"`, `check_textures=True` |
+| E501 | `tolerance_deg=1e-6`, `max_report=8` |
+| E502 | `max_report=6` |
+| W503 | `tolerance_deg=1e-6`, `max_report=8` |
+| W504 | — |
+| W505 | `max_report=8` (the plan, fold and tolerance are declared, not configured) |
+
+## The body plan is declared, never inferred
+
+Worth stating on its own, because it is the one place these rules could have
+gone quietly wrong. **Nothing in E501–W505 knows what a body is.** No rule looks
+for a joint called `shoulder`, counts limbs, assumes one root, assumes a chain
+is arm-length, or assumes symmetry means bilateral.
+
+That last one is the trap. "Symmetry" means *bilateral* to almost every rig
+tool, and that is a statement about vertebrates rather than about geometry. A
+five-armed starfish has no mirror plane at all — reflecting the disc lands every
+arm between two others — so a bilateral check on it produces a confident wrong
+answer, which is the one output this subsystem must never emit. So the program
+says which plan it built and W505 checks *that*:
+
+| Declared | Checked by |
+|---|---|
+| `bilateral` | reflecting across `{p · normal == offset}` |
+| `radial` | rotating by 360/`fold` about `axis` through `center` |
+| `none` | reported as *not checked*, and nothing is inferred |
+
+`none` is a real answer. A serpent, a tentacle and a lamp arm are asymmetric on
+purpose, and they get a skip with a reason instead of a warning they could never
+satisfy.
+
+The fixtures are chosen to hold that line: a five-fold radial echinoderm, a
+24-link serpent with no limbs, and a six-legged bilateral arthropod. Not a
+humanoid among them, deliberately — a rule that assumed two arms would pass a
+human-shaped suite and fail the first real asset, silently. `test_rules.py`
+asserts limb count is never counted (4, 6 and 8 legs all clean), chain depth is
+never bounded (2, 24 and 120 links all clean), any fold holds (3, 5, 8, 12), and
+that grading the starfish *bilaterally* does fire — because a rule that stayed
+quiet there would be the false negative all of this exists to prevent.
 
 Five profiles ship — every one §7 names.
 
 | Profile | What it changes, and why |
 |---|---|
 | `game_prop_pbr` | The §7 table as written. The baseline the other four are stated against |
-| `character_skinned` | Tightens origin and transform tolerance, loosens texel density, downgrades E108 to a warning. Faces get more texels on purpose, which is why the density band widens |
+| `character_skinned` | The profile for an asset that has a rig, and the only one selecting E501–W505. Tightens origin and transform tolerance, loosens texel density, downgrades E108 to a warning. Faces get more texels on purpose, which is why the density band widens |
 | `mobile_vr` | Allows open shells for foliage cards, needs triangles rather than quads, and grades texel density and NPOT textures as errors |
 | `hard_surface_subdiv` | The emitted faces are a subdivision cage, not the shipped surface. Quads stay mandatory in **both directions** — `min_face_verts: 4` as well as `max_face_verts: 4`, because Catmull-Clark turns a non-quad into a visible pinch and a triangle is the non-quad that actually turns up. Transform tolerance tightens, because a subdiv modifier evaluates in object space and an unapplied scale changes the resulting surface rather than only its interpretation. `min_face_area` rises, because a sliver that would vanish in a dense mesh is a pinch in a cage. Texel density drops to a note: it is measured on the cage and the renderer shades the limit surface, so the number is real and the gate would be wrong |
 | `film_usd` | An offline renderer reads this, not an engine importer. It dices and subdivides at render time, so n-gons become a note. USD composes xformOps onto the prim and preserves them exactly, so E104 becomes a warning rather than the silent FBX bug. Open shells are legal, the density band widens for per-tile UDIM authoring, and NPOT is an observation because a film texture system mips arbitrary dimensions |
@@ -234,10 +283,10 @@ probes, and it could not host E102. See proposed change 8.
 | `topology.py` | 244 | edge maps, manifoldness, bowties, components, degeneracy |
 | `uvmap.py` | 183 | UV islands, island naming, per-island area and texel density |
 | `geom.py` | 144 | polygon area, Newell normals, convex clip, segment distance |
-| `profiles.py` | 271 | the five §7 profiles. Data only |
-| `rules/*.py` | 1590 | the 13 rules, grouped by what they read |
-| `fixtures.py` | 544 | 21 assets: 3 clean, 18 broken, one per failure mode |
-| `tests/*.py` | 1229 | 103 tests plus the Blender bridge script |
+| `profiles.py` | 311 | the five §7 profiles. Data only |
+| `rules/*.py` | 2140 | the 19 rules, grouped by what they read |
+| `fixtures.py` | 728 | 29 assets: 6 clean, 23 broken, one per failure mode |
+| `tests/*.py` | 1899 | 120 tests plus the Blender bridge script |
 
 A new rule is a decorated function. A new profile is a tuple of codes. Neither
 touches `engine.py`. `test_engine.py` proves it: the test file defines a profile
