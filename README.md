@@ -63,6 +63,10 @@ reasons rather than prompt-quality ones.
   plausible-looking rubbish.
 - **The `.lathe` language**: `600mm` and `0.6m` unify, and `box(600, 600, 600)` fails to
   compile. Units are part of the type, so the metres-versus-millimetres bug cannot be written.
+- **Articulation**: named joints with typed limits, forward kinematics, and a deterministic
+  IK solver behind §5.4's `solve { }`. A pose is `{joint: angle}` — a parameter edit that
+  diffs and writes back, never a mesh mutation. Rigid parts only; see
+  [lathe/pose/](lathe/pose/README.md) for why that ceiling is where it is.
 - **Interactive preview**: one self-contained HTML file — full orbit camera, adjustable
   lighting rig, four shading modes, and live vertex/polygon statistics with a per-tag
   breakdown. No library, no network, no Blender.
@@ -71,16 +75,14 @@ reasons rather than prompt-quality ones.
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 497 tests pass. Checked against closed-form truth, not smoke.
+- 539 tests. Checked against closed-form truth, not smoke. 509 pass without Blender
+  installed; every one of the remaining 30 is gated on the bevel and needs Blender 5.2 on
+  `PATH`.
 
 ## What is missing
 
 Stated plainly, because the gap decides whether this is useful to you.
 
-- **No DSL.** The `.lathe` language in [DESIGN.md](DESIGN.md) §4 has no parser. Models are
-  Python against the API.
-- **No unit types.** §4.1 wants a bare `600` to be a type error. Today it is float metres plus
-  an `mm()` helper.
 - **No LOD chain.** W204 and W205 need a chain and a silhouette comparison, and nothing
   generates one. Reduction would need decimation or retopology.
 - **No component library**, so §9's `library()` tool is omitted rather than stubbed.
@@ -89,11 +91,16 @@ Stated plainly, because the gap decides whether this is useful to you.
   again a silent bug. The two paths differ in safety too: the DSL interpreter is an AST walker
   with no builtins in scope, while the Python path runs `exec` in a restricted namespace that
   is explicitly not a sandbox.
-- **No animation-grade topology.** Procedural geometry has no edge flow. The villager is a
-  stylized figure, not a riggable character, and [models/README.md](models/README.md) says so
-  in detail.
+- **No animation-grade topology, so articulation is rigid only.** Joints, FK and IK exist
+  and parts move rigidly, which covers hinges, linkages and posable kit pieces. Skinning does
+  not, and cannot yet: procedural geometry has no edge flow, the villager is a stylized figure
+  rather than a riggable character, and [models/README.md](models/README.md) says so in
+  detail. §12 defers quad remeshing and cage deformation, and that is still where deformation
+  waits.
+- **No keyframes.** A pose is a static parameter set. The IR has no time axis, and the
+  verifier's asset model holds one mesh — which is also why W204 and W205 are unimplemented.
 
-The DSL is the one that still matters for the premise. The MCP surface exists now, so an
+Topology is the one that still matters for the premise. The MCP surface exists now, so an
 agent can drive this end to end.
 
 ## Quick start
@@ -106,6 +113,7 @@ python models/build_all.py               # build, verify, probe and render all t
 python models/build_all.py --no-render   # skip Blender, keep the checks
 python -m pytest lathe/verify/tests -q   # 106 tests
 python -m pytest lathe/perceive/tests -q # 172 tests
+python -m pytest lathe/pose/tests -q     # 45 tests
 ```
 
 Set `LATHE_BLENDER` if Blender is not on `PATH`.
@@ -121,6 +129,7 @@ Set `LATHE_BLENDER` if Blender is not on `PATH`.
 | `lathe/render/` | Contact sheets, mattes, wireframes |
 | [`lathe/mcp/`](lathe/mcp/README.md) | The twelve-tool agent surface |
 | `lathe/lang/` | The `.lathe` language: units, parser, evaluator |
+| [`lathe/pose/`](lathe/pose/README.md) | Joints, forward kinematics, IK, rigid posing |
 | `lathe/viewer/` | Self-contained interactive WebGL preview |
 | [`lathe/io/`](lathe/io/README.md) | Export, and the native glTF reader |
 | `models/` | The three test assets and the build runner |
