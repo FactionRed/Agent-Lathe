@@ -44,7 +44,10 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(
             set(RULES),
             {"E101", "E102", "E103", "E104", "E105", "E106", "E107", "E108",
-             "W201", "W202", "W203", "W206", "W302", "N401"})
+             "W201", "W202", "W203", "W206", "W302", "N401",
+             # Articulation. Registered globally like every other rule; only
+             # `character_skinned` selects them.
+             "E501", "E502", "W503", "W504", "W505"})
 
     def test_every_rule_has_a_title_and_a_docstring(self):
         for code, spec in RULES.items():
@@ -56,8 +59,10 @@ class TestRegistry(unittest.TestCase):
         """A rule that only estimates has to say so, or the report overclaims."""
         approximate = {c for c, s in RULES.items() if s.is_approximate}
         # W206 cannot tell a deliberately unmapped surface from an accidental
-        # collapse, so it declares itself approximate too.
-        self.assertEqual(approximate, {"W202", "W206", "W302"})
+        # collapse, so it declares itself approximate too. W505 compares joint
+        # origins and not the limits, axes or geometry hanging off them, so a
+        # rig can satisfy it and still bend asymmetrically.
+        self.assertEqual(approximate, {"W202", "W206", "W302", "W505"})
         for code in approximate:
             self.assertGreater(len(RULES[code].approximation), 40)
 

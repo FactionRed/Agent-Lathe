@@ -7,6 +7,6 @@ function; adding a profile means adding a tuple of codes in profiles.py. Neither
 touches engine.py.
 """
 
-from . import budget, naming, texture, topology, transform, uv  # noqa: F401
+from . import budget, naming, pose, texture, topology, transform, uv  # noqa: F401
 
-__all__ = ["budget", "naming", "texture", "topology", "transform", "uv"]
+__all__ = ["budget", "naming", "pose", "texture", "topology", "transform", "uv"]

@@ -100,6 +100,91 @@ class BakeSpec:
 
 
 @dataclass(frozen=True)
+class JointDecl:
+    """One hinge, as the emitted asset declares it.
+
+    Plain data, like every other declaration here -- deliberately not a
+    `pose.Joint`. `EmitSpec` is the contract an asset carries, and it holds
+    numbers rather than kernel objects so the verifier can grade an asset that
+    arrived from somewhere else entirely. Angles are radians, matching the rest
+    of the system.
+    """
+
+    name: str
+    limit: Tuple[float, float] = (-2.0 * math.pi, 2.0 * math.pi)
+    angle: float = 0.0                       # the pose this asset was emitted in
+    parent: Optional[str] = None
+    offset: Vec3 = (0.0, 0.0, 0.0)           # rest translation, in the parent frame
+    axis: Vec3 = (0.0, 1.0, 0.0)
+
+
+@dataclass(frozen=True)
+class ReachDecl:
+    """`assert reach(ankle, target) < 2mm`, carried forward to emit.
+
+    The IK counterpart of a triangle budget: the program stated where a named
+    tip was supposed to end up, so the gate can check that it did.
+    """
+
+    tip: str
+    target: Vec3
+    tolerance: float = 0.002                 # metres
+
+
+@dataclass(frozen=True)
+class SymmetryDecl:
+    """The body plan, declared rather than assumed.
+
+    **This exists because "symmetry" silently means "bilateral" to almost every
+    rig tool, and that is a statement about vertebrates, not about geometry.** A
+    starfish is five-fold radial, a jellyfish eight-fold, a spider bilateral
+    with eight limbs rather than four, a snake has no limb symmetry worth
+    checking at all, and a lamp arm is not symmetric in any direction. Measuring
+    any of those against a mirror plane through the origin produces a confident
+    wrong answer, which is the one output this subsystem must never emit.
+
+    So the program says which plan it built, and the rule checks *that*:
+
+        `bilateral` — reflect across the plane {p . normal == offset}
+        `radial`    — rotate by 360/fold about `axis` through `center`
+        `none`      — checked as not applicable, and nothing is inferred
+
+    `none` is a real answer, not an opt-out. An asymmetric mechanism declaring
+    it gets a *not checked* line instead of a warning it can never satisfy.
+    """
+
+    kind: str = "none"                       # bilateral | radial | none
+    axis: Vec3 = (0.0, 0.0, 1.0)             # radial: the rotation axis
+    normal: Vec3 = (1.0, 0.0, 0.0)           # bilateral: the mirror plane normal
+    offset: float = 0.0                      # plane offset along `normal`, metres
+    center: Vec3 = (0.0, 0.0, 0.0)           # radial: a point on the axis
+    fold: int = 2                            # radial: how many repeats
+    tolerance: float = 1e-4                  # metres
+
+
+@dataclass(frozen=True)
+class ArticulationSpec:
+    """What `emit` declares about a posed asset: the rig, and the pose used."""
+
+    joints: Tuple[JointDecl, ...] = ()
+    reach: Tuple[ReachDecl, ...] = ()
+    symmetry: Optional[SymmetryDecl] = None
+    # How many joints have no parent. One for most creatures, but a rig can
+    # legitimately hold several -- a floating orb, a detached jaw, a swarm --
+    # so this is declared and compared, never assumed to be 1.
+    roots: Optional[int] = None
+
+    def pose(self) -> Dict[str, float]:
+        return {j.name: float(j.angle) for j in self.joints}
+
+    def joint(self, name: str) -> Optional[JointDecl]:
+        for j in self.joints:
+            if j.name == name:
+                return j
+        return None
+
+
+@dataclass(frozen=True)
 class EmitSpec:
     """The declared expectation -- the other half of every assertion.
 
@@ -121,6 +206,7 @@ class EmitSpec:
     textures: Tuple[TextureDecl, ...] = ()
     bake: Optional[BakeSpec] = None
     unit_scale: float = 1.0  # metres per mesh unit
+    articulation: Optional[ArticulationSpec] = None
 
     def budget_for_lod(self) -> Optional[int]:
         key = "tris_lod%d" % self.lod
@@ -294,6 +380,32 @@ class Asset:
     @property
     def name(self) -> str:
         return self.mesh.name
+
+
+def articulation_from_rig(rig, pose=None, reach=(), symmetry=None,
+                          roots: Optional[int] = None) -> ArticulationSpec:
+    """Flatten a `pose.Rig` into the declaration the verifier grades.
+
+    The bridge lives here rather than in `lathe.pose` because it is the
+    verifier's contract being satisfied, not the rig's. `lathe.pose` has no idea
+    this subsystem exists and should keep it that way.
+    """
+    angles = dict(rig.skeleton.rest())
+    if pose:
+        angles.update({k: float(v) for k, v in pose.items()})
+    joints = tuple(
+        JointDecl(
+            name=name,
+            limit=tuple(float(v) for v in rig.skeleton.joint(name).limit),
+            angle=float(angles[name]),
+            parent=rig.skeleton.joint(name).parent,
+            offset=tuple(float(v) for v in rig.skeleton.joint(name).offset),
+            axis=tuple(float(v) for v in rig.skeleton.joint(name).unit_axis()),
+        )
+        for name in rig.skeleton.names
+    )
+    return ArticulationSpec(joints=joints, reach=tuple(reach),
+                            symmetry=symmetry, roots=roots)
 
 
 # --------------------------------------------------------------- adapters
