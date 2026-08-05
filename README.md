@@ -69,6 +69,9 @@ reasons rather than prompt-quality ones.
   plausible-looking rubbish.
 - **The `.lathe` language**: `600mm` and `0.6m` unify, and `box(600, 600, 600)` fails to
   compile. Units are part of the type, so the metres-versus-millimetres bug cannot be written.
+  It rigs, too — `joint`, `bind`, and §5.4's reserved `solve { reach head to (…) within 2mm }`.
+  A joint limit is typed like everything else, so `limit (-90, 90)` is the same error
+  `box(600, 600, 600)` is. A goal that does not converge raises rather than shrugging.
 - **Articulation**: named joints with typed limits, forward kinematics, and a deterministic
   IK solver behind §5.4's `solve { }`. A pose is `{joint: angle}` — a parameter edit that
   diffs and writes back, never a mesh mutation. Rigid parts only; see
@@ -88,7 +91,7 @@ reasons rather than prompt-quality ones.
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 566 tests. Checked against closed-form truth, not smoke. 537 pass without Blender
+- 581 tests. Checked against closed-form truth, not smoke. 552 pass without Blender
   installed; every one of the remaining 29 is gated on the bevel and needs Blender 5.2 on
   `PATH`.
 
