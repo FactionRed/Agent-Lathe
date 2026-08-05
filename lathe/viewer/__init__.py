@@ -19,6 +19,8 @@ What the viewer shows:
     a per-tag triangle breakdown driven by section 5.2 provenance
   * given a `pose.Rig`, a slider per joint bounded by that joint's declared
     limit, live articulation, and the resulting pose as copyable program text
+  * given `params`, a field per declared parameter, and the edits as
+    `param seat_h = 480mm` lines -- requested, not previewed, and said so
 
 **Why a read-only viewer grew a control.** Section 11 put a review surface first
 and "direct manipulation that writes back to the IR" later, and section 10 says
@@ -33,12 +35,25 @@ So the page never hands back geometry. It hands back a handful of named, typed
 angles -- text a human can read, the history DAG can diff, and the agent can act
 on. A dragged vertex would be none of those things.
 
-Poses specifically, and not yet geometry parameters, because a pose is the one
-edit this page can actually *show*: articulating a rig is rigid transforms of
-parts already in the payload, so it costs some linear algebra and no rebuild.
-Changing `seat_h` needs Manifold and a re-evaluation, which a file with no
-network cannot do. Offering a slider that silently failed to preview would be
-worse than not offering it.
+**Two kinds of edit, and the page is honest about the difference.** A joint
+angle previews live: articulating a rig is rigid transforms of parts already in
+the payload, so it costs some linear algebra and no rebuild. A geometry
+parameter cannot -- changing `seat_h` needs Manifold and a re-evaluation, which
+a file with no network can never do.
+
+The tempting resolutions are both wrong. Hiding parameters means the one edit a
+human most often wants has no route back into the program. Offering a slider
+that silently fails to move anything reads as a broken control, and teaches the
+reader to distrust the panel. So the parameter rows are offered, marked pending
+when changed, and captioned with why the model did not move. The write-back
+labels the two kinds separately, because "previewed above" and "needs a rebuild"
+are different promises and a reader is entitled to know which one they are
+holding.
+
+Values ride in the unit the source *wrote*, not in SI: a param declared `450mm`
+comes back as `480mm` and not `0.48m`, because the line is meant to be pasted
+over the original and a silent unit change would make a correct edit look like a
+rewrite.
 
 **The page checks itself.** Forward kinematics is implemented twice -- once in
 `lathe/pose/skeleton.py` and once in JavaScript here -- and two implementations
@@ -59,7 +74,7 @@ import base64
 import colorsys
 import json
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -151,6 +166,35 @@ def _per_tri_tags(msh: pmesh.Mesh, part_tags: Dict[int, str], tag_index) -> np.n
         return np.zeros(msh.n_tris, dtype=np.float32)
     lut = {pid: tag_index.get(tag, 0) for pid, tag in part_tags.items()}
     return np.array([lut.get(int(p), 0) for p in msh.part_id], dtype=np.float32)
+
+
+def _params_payload(params) -> list:
+    """`{name: value}` from a program, flattened for the page.
+
+    Values are carried in the unit the source *wrote*, not in SI. A param
+    declared `450mm` has to come back as `480mm` and not `0.48m`: the write-back
+    is meant to be pasted over the original line, and silently changing its unit
+    would make a correct edit look like a rewrite.
+
+    Duck-typed on `.kind` so the viewer keeps no import of `lathe.lang`. A plain
+    number is accepted too, and reported as dimensionless.
+    """
+    out = []
+    for name, val in (params or {}).items():
+        kind = getattr(val, "kind", None)
+        if kind in ("length", "angle"):
+            unit = val.unit
+            out.append({"name": name, "value": round(val.to(unit), 9),
+                        "unit": unit, "kind": kind})
+        elif kind == "number":
+            out.append({"name": name, "value": round(val.v, 9),
+                        "unit": None, "kind": "number"})
+        elif isinstance(val, (int, float)) and not isinstance(val, bool):
+            out.append({"name": name, "value": round(float(val), 9),
+                        "unit": None, "kind": "number"})
+        # Anything else -- a solid, a selection, a string -- is not a number the
+        # page can offer an edit for, and is dropped rather than shown inert.
+    return out
 
 
 def _as_rig(subject):
@@ -295,7 +339,8 @@ def _stats(msh: pmesh.Mesh) -> dict:
 
 def to_html(subject, materials: Optional[Dict[str, str]] = None,
             title: Optional[str] = None, wire_angle: float = 12.0,
-            pose: Optional[Dict[str, float]] = None) -> str:
+            pose: Optional[Dict[str, float]] = None,
+            params: Optional[Dict[str, Any]] = None) -> str:
     """Render a Solid, a neutral Mesh, or a `pose.Rig` into standalone HTML.
 
     Given a Rig the page gains joint sliders and poses the model live, then
@@ -356,6 +401,8 @@ def to_html(subject, materials: Optional[Dict[str, str]] = None,
         data["rig"] = _rig_payload(rig, pose)
         data["jnt"] = _b64(joint_attr, np.float32)
         data["edgeJnt"] = _b64(edge_joint, np.float32)
+    if params:
+        data["params"] = _params_payload(params)
 
     shell = open(_SHELL, "r", encoding="utf-8").read()
     name = title or subject_name
@@ -385,9 +432,10 @@ def _escape(s: str) -> str:
 
 def write(subject, path: str, materials: Optional[Dict[str, str]] = None,
           title: Optional[str] = None,
-          pose: Optional[Dict[str, float]] = None) -> dict:
+          pose: Optional[Dict[str, float]] = None,
+          params: Optional[Dict[str, Any]] = None) -> dict:
     """Write the preview to `path`. Returns a small summary."""
-    html = to_html(subject, materials, title, pose=pose)
+    html = to_html(subject, materials, title, pose=pose, params=params)
     rig = _as_rig(subject)
     msh = rig.at_rest().mesh() if rig is not None else _subject(subject)[0]
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)

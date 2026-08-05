@@ -86,12 +86,18 @@ reasons rather than prompt-quality ones.
   That feedback loop is the actual product." The page re-derives forward kinematics in
   JavaScript and checks itself against the kernel's own numbers on load, refusing to open
   rather than show a pose the kernel would disagree with.
+- **Geometry parameters too, and the page is honest that it cannot preview them.** Pass
+  `params` and each declared parameter gets a field; edits come back as
+  `param seat_h = 480mm` in the unit the source wrote. Changing one needs Manifold and a
+  re-evaluation, which a file with no network can never do — so the rows mark themselves
+  pending and say why the model did not move. A control that silently failed to preview
+  would read as broken and teach the reader to distrust the panel.
 - **MCP surface: twelve tools**, so an agent can author, import, measure, look, validate,
   branch, compare and export without anyone writing Python. See
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 581 tests. Checked against closed-form truth, not smoke. 552 pass without Blender
+- 590 tests. Checked against closed-form truth, not smoke. 561 pass without Blender
   installed; every one of the remaining 29 is gated on the bevel and needs Blender 5.2 on
   `PATH`.
 

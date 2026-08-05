@@ -321,6 +321,87 @@ class TestRigPage(unittest.TestCase):
             self.assertTrue(info["self_contained"])
 
 
+class TestParameters(unittest.TestCase):
+    """Geometry parameters, which the page can request but cannot preview.
+
+    Changing `seat_h` needs Manifold and a re-evaluation, which a file with no
+    network cannot do. The page offers the edit and says so; what it must never
+    do is imply the model on screen reflects it.
+    """
+
+    def _params(self):
+        from lathe.lang import values as LV
+        return {
+            "plinth_r": LV.Length.of(90, "mm"),
+            "arm_len": LV.Length.of(0.34, "m"),
+            "segments": LV.Scalar(32),
+            "tilt": LV.Angle.of(15, "deg"),
+        }
+
+    def test_values_arrive_in_the_unit_the_source_wrote(self):
+        """`450mm` must come back as `480mm`, not `0.48m`. The write-back is
+        pasted over the original line, and silently changing the unit would make
+        a correct edit look like a rewrite."""
+        data = _payload(to_html(_cube(), params=self._params()))
+        by_name = {p["name"]: p for p in data["params"]}
+        self.assertEqual((by_name["plinth_r"]["value"], by_name["plinth_r"]["unit"]),
+                         (90.0, "mm"))
+        self.assertEqual((by_name["arm_len"]["value"], by_name["arm_len"]["unit"]),
+                         (0.34, "m"))
+        self.assertEqual((by_name["tilt"]["value"], by_name["tilt"]["unit"]),
+                         (15.0, "deg"))
+
+    def test_a_dimensionless_param_carries_no_unit(self):
+        data = _payload(to_html(_cube(), params=self._params()))
+        seg = [p for p in data["params"] if p["name"] == "segments"][0]
+        self.assertIsNone(seg["unit"])
+        self.assertEqual(seg["kind"], "number")
+
+    def test_plain_numbers_are_accepted(self):
+        """The viewer keeps no import of `lathe.lang`, so the bridge is duck
+        typed and a bare float has to work."""
+        data = _payload(to_html(_cube(), params={"count": 4}))
+        self.assertEqual(data["params"][0], {"name": "count", "value": 4.0,
+                                             "unit": None, "kind": "number"})
+
+    def test_values_that_are_not_numbers_are_dropped(self):
+        """A solid or a string is not something the page can offer an edit for.
+        Showing an inert row would be worse than showing none."""
+        data = _payload(to_html(_cube(), params={"n": 3, "body": _cube(),
+                                                 "label": "wood"}))
+        self.assertEqual([p["name"] for p in data["params"]], ["n"])
+
+    def test_a_page_without_params_carries_none(self):
+        self.assertNotIn("params", _payload(to_html(_cube())))
+
+    def test_params_need_no_rig(self):
+        """A static prop has parameters worth requesting even with no joints."""
+        html = to_html(_cube(), params={"size": 3})
+        data = _payload(html)
+        self.assertIn("params", data)
+        self.assertNotIn("rig", data)
+        self.assertIn('id="paramsect"', html)
+
+    def test_the_page_says_the_edit_is_not_previewed(self):
+        """The load-bearing sentence. Without it, a control that changes nothing
+        on screen reads as broken rather than as honest."""
+        html = to_html(_cube(), params={"size": 3})
+        self.assertIn("rebuilding needs the kernel", html)
+        self.assertIn("needs a rebuild, not previewed", html)
+
+    def test_identifiers_are_not_uppercased_by_the_row_style(self):
+        """`plinth_r` shown as `PLINTH_R`, or `mm` as `MM`, is a name nobody can
+        paste back. The row style uppercases its labels, so these opt out."""
+        html = to_html(_cube(), params={"size": 3})
+        self.assertIn("span.ident", html)
+        self.assertIn("text-transform: none", html)
+
+    def test_params_and_a_rig_coexist(self):
+        data = _payload(to_html(_arm_rig(), params=self._params()))
+        self.assertIn("rig", data)
+        self.assertEqual(len(data["params"]), 4)
+
+
 class TestWrite(unittest.TestCase):
     def test_writes_a_file_and_reports_it(self):
         with tempfile.TemporaryDirectory(prefix="lathe_view_") as tmp:

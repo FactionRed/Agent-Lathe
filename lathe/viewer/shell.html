@@ -123,6 +123,30 @@
      flourish -- it is why the slider stopped moving. */
   .row.atlimit .val { color: var(--dro); }
   .row.atlimit .val::after { content: " \25C0"; }
+  /* A changed parameter is a *request*: the geometry on screen still shows the
+     old value, because rebuilding it needs the kernel. Marking the row is what
+     stops that reading as a broken control. */
+  .tagline.warn { color: var(--dro); }
+  .row.pending input { border-bottom: 1px solid var(--dro); }
+  .row.pending > span::after { content: " \2022"; color: var(--dro); }
+  input[type=number] {
+    flex: 1; min-width: 0; background: var(--sink); color: var(--ink);
+    border: 1px solid var(--rule); border-radius: 2px; padding: 2px 5px;
+    font: inherit; font-size: 11px; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  input[type=number]:focus-visible { outline: 1px solid var(--dro); outline-offset: 1px; }
+  .unit {
+    flex: 0 0 28px; color: var(--dim); font-size: 10px; letter-spacing: .05em;
+  }
+  /* Identifiers and units are copied verbatim into a program, so they are shown
+     verbatim. The row style uppercases its labels, which is right for "AZIMUTH"
+     and wrong for `plinth_r` -- and `MM` is not a unit this language accepts. */
+  .row > span.ident, .unit { text-transform: none; letter-spacing: .02em; }
+  .row > span.ident {
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+    font-size: 10.5px;
+  }
   #hint {
     position: absolute; bottom: 12px; left: 12px; color: var(--dim);
     background: var(--panel); border: 1px solid var(--rule); border-radius: 2px;
@@ -164,8 +188,19 @@
     <div class="btns" id="posebtns"></div>
     <div id="joints"></div>
     <p class="tagline" id="posenote"></p>
+    </div>
+
+    <div class="sect" id="paramsect" hidden>
+    <h2>Parameters</h2>
+    <div class="btns" id="parambtns"></div>
+    <div id="params"></div>
+    <p class="tagline warn" id="paramnote"></p>
+    </div>
+
+    <div class="sect" id="wbsect" hidden>
     <h2 id="wblabel">Write back</h2>
-    <textarea id="writeback" readonly rows="7" spellcheck="false"
+    <div class="btns" id="wbbtns"></div>
+    <textarea id="writeback" readonly rows="8" spellcheck="false"
               aria-labelledby="wblabel"></textarea>
     </div>
 
@@ -604,18 +639,32 @@
   // constraint edit, not an opaque mesh mutation ... Human correction becomes
   // machine-legible input. That feedback loop is the actual product."
   //
+  // Two kinds of edit, and the page is honest about the difference. A joint
+  // angle is rigid transforms of geometry already here, so it previews live. A
+  // geometry parameter -- `seat_h`, a segment count -- needs Manifold and a
+  // re-evaluation, which a file with no network cannot do. Rather than offer a
+  // control that silently fails to preview, the parameter rows say so and mark
+  // themselves pending. Both come back as text either way, which is the part
+  // section 10 actually asks for.
+  //
   // Assigned rather than declared, and first called at the very bottom: this
-  // runs before the render state below exists, and `refreshPose` draws.
-  let refreshPose = null;
-  if (RIG) {
-    el("posesect").hidden = false;
-    const movable = RIG.joints.filter((j) => !j.locked);
-    const rows = {};
+  // runs before the render state below exists, and `refreshAll` draws.
+  let refreshAll = null;
+  const PARAMS = RAW.params || null;
+  const paramNow = {};
+  if (PARAMS) { PARAMS.forEach((p) => { paramNow[p.name] = p.value; }); }
 
+  if (RIG || PARAMS) {
+    el("wbsect").hidden = false;
+    const movable = RIG ? RIG.joints.filter((j) => !j.locked) : [];
+    const rows = {}, prows = {};
+
+    if (RIG) { el("posesect").hidden = false; }
     movable.forEach((j) => {
       const row = document.createElement("label");
       row.className = "row";
       const name = document.createElement("span");
+      name.className = "ident";
       name.textContent = j.name;
       name.style.flex = "0 0 74px";
       const sl = document.createElement("input");
@@ -632,30 +681,83 @@
       rows[j.name] = { row: row, slider: sl, val: val, j: j };
       sl.addEventListener("input", () => {
         pose[j.name] = +sl.value;
-        refreshPose();
+        refreshAll();
+      });
+    });
+
+    // A number field, not a slider: a slider needs a range, and nothing in the
+    // program declares one for `seat_h`. Inventing bounds would put a limit on
+    // the model that the source never stated.
+    const STEP = { length: 1, angle: 1, number: 1 };
+    if (PARAMS) { el("paramsect").hidden = false; }
+    PARAMS && PARAMS.forEach((p) => {
+      const row = document.createElement("label");
+      row.className = "row";
+      const name = document.createElement("span");
+      name.className = "ident";
+      name.textContent = p.name;
+      name.style.flex = "0 0 74px";
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.step = p.unit === "m" ? 0.01 : (STEP[p.kind] || 1);
+      inp.value = p.value;
+      inp.setAttribute("aria-label", p.name + (p.unit ? " in " + p.unit : ""));
+      const unit = document.createElement("b");
+      unit.className = "unit";
+      unit.textContent = p.unit || "";
+      row.append(name, inp, unit);
+      el("params").appendChild(row);
+      prows[p.name] = { row: row, input: inp, p: p };
+      inp.addEventListener("input", () => {
+        const v = parseFloat(inp.value);
+        paramNow[p.name] = isNaN(v) ? p.value : v;
+        refreshAll();
       });
     });
 
     const fmt = (v) => (Math.round(v * 10) / 10).toFixed(1);
+    // Trailing zeros make `480.000000mm` look like a precision claim the edit
+    // never made, so they go.
+    const num = (v) => String(Math.round(v * 1e6) / 1e6);
 
-    function writeback() {
+    function posePart() {
       // Only the joints that actually moved. `forward()` defaults everything
       // else to rest, so a short diff and a full dump mean the same thing --
       // and the short one is the one a human can check at a glance.
       const moved = movable.filter((j) => Math.abs(pose[j.name] - j.start) > 0.05);
-      if (!moved.length) {
-        return "# " + RIG.name + "\n# unchanged — move a joint to write a pose";
-      }
+      if (!moved.length) { return ""; }
       const w = Math.max(...moved.map((j) => j.name.length));
       const lines = moved.map((j) =>
         "    " + JSON.stringify(j.name) + ":" +
         " ".repeat(w - j.name.length + 1) + "deg(" + fmt(pose[j.name]) + "),");
-      return "# " + RIG.name + " — " + moved.length + " joint"
-             + (moved.length === 1 ? "" : "s") + " changed\n"
+      return "# " + moved.length + " joint" + (moved.length === 1 ? "" : "s")
+             + " changed — previewed above\n"
              + "pose = {\n" + lines.join("\n") + "\n}";
     }
 
-    refreshPose = function () {
+    function paramPart() {
+      const moved = (PARAMS || []).filter(
+        (p) => Math.abs(paramNow[p.name] - p.value) > 1e-9);
+      if (!moved.length) { return ""; }
+      const lines = moved.map((p) =>
+        "param " + p.name + " = " + num(paramNow[p.name]) + (p.unit || "")
+        + "   # was " + num(p.value) + (p.unit || ""));
+      return "# " + moved.length + " parameter" + (moved.length === 1 ? "" : "s")
+             + " changed — needs a rebuild, not previewed\n" + lines.join("\n");
+    }
+
+    function writeback() {
+      const parts = [paramPart(), posePart()].filter(Boolean);
+      // The asset name is in the heading, not the payload -- read it back
+      // rather than adding a second copy that could drift from it.
+      const head = "# " + (RIG ? RIG.name : el("asset").textContent.trim());
+      if (!parts.length) {
+        return head + "\n# unchanged — move a joint or edit a parameter";
+      }
+      return head + "\n" + parts.join("\n\n");
+    }
+
+    refreshAll = function () {
       let pinned = 0;
       movable.forEach((j) => {
         const r = rows[j.name], v = pose[j.name];
@@ -665,34 +767,58 @@
         r.row.classList.toggle("atlimit", at);
         if (at) pinned++;
       });
-      el("posenote").textContent = movable.length + " movable joint"
-        + (movable.length === 1 ? "" : "s")
-        + (pinned ? " · " + pinned + " at a declared limit" : "");
+      if (RIG) {
+        el("posenote").textContent = movable.length + " movable joint"
+          + (movable.length === 1 ? "" : "s")
+          + (pinned ? " · " + pinned + " at a declared limit" : "");
+      }
+      let pending = 0;
+      (PARAMS || []).forEach((p) => {
+        const r = prows[p.name];
+        const changed = Math.abs(paramNow[p.name] - p.value) > 1e-9;
+        r.row.classList.toggle("pending", changed);
+        if (changed) pending++;
+      });
+      if (PARAMS) {
+        el("paramnote").textContent = pending
+          ? pending + " pending — the model still shows the built values"
+          : "Editing these does not redraw: rebuilding needs the kernel.";
+      }
       el("writeback").value = writeback();
       applyPose();
       draw();
     };
 
-    [["Reset", () => { movable.forEach((j) => { pose[j.name] = j.start; }); }],
-     ["Copy", null]].forEach(([label, act]) => {
+    function reset(target) {
       const b = document.createElement("button");
-      b.textContent = label;
+      b.textContent = "Reset";
       b.onclick = () => {
-        if (act) { act(); refreshPose(); return; }
-        // Selecting the textarea works with no permissions and no clipboard
-        // API, so the copy path still exists in a sandboxed frame.
-        const ta = el("writeback");
-        ta.focus(); ta.select();
-        try {
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(ta.value);
-          } else { document.execCommand("copy"); }
-          b.textContent = "Copied";
-          setTimeout(() => { b.textContent = "Copy"; }, 1200);
-        } catch (e) { b.textContent = "Select → copy"; }
+        if (target === "pose") { movable.forEach((j) => { pose[j.name] = j.start; }); }
+        else { PARAMS.forEach((p) => { paramNow[p.name] = p.value;
+                                       prows[p.name].input.value = p.value; }); }
+        refreshAll();
       };
-      el("posebtns").appendChild(b);
-    });
+      el(target === "pose" ? "posebtns" : "parambtns").appendChild(b);
+    }
+    if (RIG) { reset("pose"); }
+    if (PARAMS) { reset("params"); }
+
+    const copy = document.createElement("button");
+    copy.textContent = "Copy";
+    copy.onclick = () => {
+      // Selecting the textarea works with no permissions and no clipboard
+      // API, so the copy path still exists in a sandboxed frame.
+      const ta = el("writeback");
+      ta.focus(); ta.select();
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(ta.value);
+        } else { document.execCommand("copy"); }
+        copy.textContent = "Copied";
+        setTimeout(() => { copy.textContent = "Copy"; }, 1200);
+      } catch (e) { copy.textContent = "Select → copy"; }
+    };
+    el("wbbtns").appendChild(copy);
   }
 
   const VIEWS = { Front: [-Math.PI/2, Math.PI/2], Back: [Math.PI/2, Math.PI/2],
@@ -841,6 +967,6 @@
   if (mq.addEventListener) mq.addEventListener("change", draw);
   new MutationObserver(draw).observe(document.documentElement,
     { attributes: true, attributeFilter: ["data-theme"] });
-  if (refreshPose) { refreshPose(); } else { draw(); }
+  if (refreshAll) { refreshAll(); } else { draw(); }
 })();
 </script>
