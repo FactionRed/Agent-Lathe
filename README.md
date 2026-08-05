@@ -70,13 +70,20 @@ reasons rather than prompt-quality ones.
 - **Interactive preview**: one self-contained HTML file — full orbit camera, adjustable
   lighting rig, four shading modes, and live vertex/polygon statistics with a per-tag
   breakdown. No library, no network, no Blender.
+- **Posing in the preview, and it writes back.** Hand the viewer a `Rig` and it grows a
+  slider per joint, bounded by that joint's declared limit, and articulates the model live.
+  What it hands back is *text* — the pose as program source to paste in — which is §10's
+  loop: "the app writes back a parameter or constraint edit, not an opaque mesh mutation …
+  That feedback loop is the actual product." The page re-derives forward kinematics in
+  JavaScript and checks itself against the kernel's own numbers on load, refusing to open
+  rather than show a pose the kernel would disagree with.
 - **MCP surface: twelve tools**, so an agent can author, import, measure, look, validate,
   branch, compare and export without anyone writing Python. See
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 539 tests. Checked against closed-form truth, not smoke. 509 pass without Blender
-  installed; every one of the remaining 30 is gated on the bevel and needs Blender 5.2 on
+- 552 tests. Checked against closed-form truth, not smoke. 523 pass without Blender
+  installed; every one of the remaining 29 is gated on the bevel and needs Blender 5.2 on
   `PATH`.
 
 ## What is missing

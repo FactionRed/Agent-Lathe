@@ -109,6 +109,20 @@
   button[aria-pressed="true"] {
     background: var(--dro); border-color: var(--dro); color: var(--sink);
   }
+  /* The write-back box. Monospace and selectable, because its whole job is to
+     be read carefully and copied verbatim into a program. */
+  textarea#writeback {
+    display: block; width: 100%; box-sizing: border-box; resize: vertical;
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+    font-size: 10.5px; line-height: 1.45; color: var(--ink);
+    background: var(--sink); border: 1px solid var(--rule); border-radius: 2px;
+    padding: 6px 7px; white-space: pre; overflow-x: auto;
+  }
+  textarea#writeback:focus-visible { outline: 1px solid var(--dro); outline-offset: 1px; }
+  /* A joint sitting on a declared limit is a fact about the rig, not a styling
+     flourish -- it is why the slider stopped moving. */
+  .row.atlimit .val { color: var(--dro); }
+  .row.atlimit .val::after { content: " \25C0"; }
   #hint {
     position: absolute; bottom: 12px; left: 12px; color: var(--dim);
     background: var(--panel); border: 1px solid var(--rule); border-radius: 2px;
@@ -145,6 +159,16 @@
   </div>
 
   <div class="panel" id="ctl">
+    <div class="sect" id="posesect" hidden>
+    <h2>Pose</h2>
+    <div class="btns" id="posebtns"></div>
+    <div id="joints"></div>
+    <p class="tagline" id="posenote"></p>
+    <h2 id="wblabel">Write back</h2>
+    <textarea id="writeback" readonly rows="7" spellcheck="false"
+              aria-labelledby="wblabel"></textarea>
+    </div>
+
     <div class="sect">
     <h2>Shading</h2>
     <div class="btns" id="modes"></div>
@@ -221,10 +245,10 @@
       throw new Error(gl.getProgramInfoLog(p));
     return p;
   }
-  function buf(data) {
+  function buf(data, dynamic) {
     const b = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, b);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, data, dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
     return b;
   }
 
@@ -289,7 +313,126 @@
     pLine = prog(LINE_VS, LINE_FS);
   } catch (e) { fail("Shader compilation failed: " + e.message); return; }
 
-  const bPos = buf(P), bNrm = buf(N), bTag = buf(T), bEdge = buf(E);
+  const posable = !!RAW.rig;
+  const bPos = buf(P, posable), bNrm = buf(N, posable), bTag = buf(T);
+  const bEdge = buf(E, posable);
+
+  // ---- articulation ----------------------------------------------------
+  // Skinning happens here on the CPU, not in the shader. One bone per vertex
+  // would fit a mat4 uniform array, but WebGL 1 only guarantees 128 vertex
+  // uniform vectors, which caps the rig at roughly two dozen joints. A few
+  // thousand vertices through a 4x4 is well under a millisecond per drag frame,
+  // so the ceiling buys nothing and costs the shader every existing page uses.
+  const RIG = RAW.rig || null;
+  const JV = RAW.jnt ? b64(RAW.jnt, Float32Array) : null;      // joint per vertex
+  const JE = RAW.edgeJnt ? b64(RAW.edgeJnt, Float32Array) : null;
+  const P0 = RIG ? P.slice() : null, N0 = RIG ? N.slice() : null;
+  const E0 = RIG ? E.slice() : null;
+  const pose = {};                                    // name -> degrees
+
+  function mul(a, b) {                                // 4x4, row-major
+    const o = new Float64Array(16);
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c];
+      o[r * 4 + c] = s;
+    }
+    return o;
+  }
+
+  // Rodrigues, built from the axis directly. Mirrors lathe/pose/skeleton.py --
+  // going via Euler angles here would introduce an ordering convention the
+  // program never stated, and the two sides would disagree.
+  function axisRot(ax, ang) {
+    const [x, y, z] = ax, c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+    return new Float64Array([
+      t*x*x + c,   t*x*y - s*z, t*x*z + s*y, 0,
+      t*x*y + s*z, t*y*y + c,   t*y*z - s*x, 0,
+      t*x*z - s*y, t*y*z + s*x, t*z*z + c,   0,
+      0, 0, 0, 1]);
+  }
+  function local(j, ang) {
+    const M = axisRot(j.axis, ang);
+    M[3] = j.offset[0]; M[7] = j.offset[1]; M[11] = j.offset[2];
+    return M;
+  }
+  function forward(angles) {                          // name -> world 4x4
+    const world = {};
+    for (const j of RIG.joints) {
+      const L = local(j, (angles[j.name] || 0) * Math.PI / 180);
+      world[j.name] = j.parent ? mul(world[j.parent], L) : L;
+    }
+    return world;
+  }
+  function rigidInverse(M) {                          // R orthonormal by build
+    const o = new Float64Array([M[0],M[4],M[8],0, M[1],M[5],M[9],0,
+                                M[2],M[6],M[10],0, 0,0,0,1]);
+    o[3]  = -(o[0]*M[3] + o[1]*M[7] + o[2]*M[11]);
+    o[7]  = -(o[4]*M[3] + o[5]*M[7] + o[6]*M[11]);
+    o[11] = -(o[8]*M[3] + o[9]*M[7] + o[10]*M[11]);
+    return o;
+  }
+
+  if (RIG) {
+    // Does this page's kinematics agree with the kernel's? The payload carries
+    // Python's own rest positions; if the two ever drift -- a flipped axis, a
+    // different rotation order -- it would be invisible in a still frame and
+    // wrong in every pose. Better to refuse than to show a confident lie.
+    const restAngles = {};
+    RIG.joints.forEach((j) => { restAngles[j.name] = 0; });
+    const here = forward(restAngles);
+    let worst = 0, culprit = "";
+    RIG.joints.forEach((j) => {
+      const m = here[j.name], w = j.restWorld;
+      const d = Math.hypot(m[3] - w[0], m[7] - w[1], m[11] - w[2]);
+      if (d > worst) { worst = d; culprit = j.name; }
+    });
+    if (worst > 1e-6) {
+      fail("This page's kinematics disagree with the kernel that built it: joint '"
+           + culprit + "' is " + (worst * 1000).toFixed(4)
+           + " mm out at the rest pose. Refusing to show a pose that would be wrong.");
+      return;
+    }
+    RIG.joints.forEach((j) => { pose[j.name] = j.start; });
+  }
+
+  const scratchP = RIG ? new Float32Array(P.length) : null;
+  const scratchN = RIG ? new Float32Array(N.length) : null;
+  const scratchE = RIG ? new Float32Array(E.length) : null;
+
+  // The rest pose never changes, so its inverse is computed once rather than
+  // once per drag frame.
+  const REST_INV = RIG ? (() => {
+    const r = forward(Object.fromEntries(RIG.joints.map((j) => [j.name, 0])));
+    return Object.fromEntries(RIG.bound.map((n) => [n, rigidInverse(r[n])]));
+  })() : null;
+
+  function applyPose() {
+    if (!RIG || !JV) return;
+    const w = forward(pose);
+    // rest-space geometry -> posed: world(pose) * inverse(world(rest))
+    const D = RIG.bound.map((n) => mul(w[n], REST_INV[n]));
+    const put = (src, dst, idx, isNormal) => {
+      for (let i = 0, n = src.length / 3; i < n; i++) {
+        const M = D[idx[i]] || D[0];
+        const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
+        // A normal is a direction: rotate it, never translate it.
+        const t = isNormal ? 0 : 1;
+        dst[i*3]   = M[0]*x + M[1]*y + M[2]*z  + M[3]*t;
+        dst[i*3+1] = M[4]*x + M[5]*y + M[6]*z  + M[7]*t;
+        dst[i*3+2] = M[8]*x + M[9]*y + M[10]*z + M[11]*t;
+      }
+    };
+    put(P0, scratchP, JV, false);
+    put(N0, scratchN, JV, true);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bPos); gl.bufferSubData(gl.ARRAY_BUFFER, 0, scratchP);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bNrm); gl.bufferSubData(gl.ARRAY_BUFFER, 0, scratchN);
+    if (JE && E0.length) {
+      put(E0, scratchE, JE, false);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bEdge);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, scratchE);
+    }
+  }
 
   // ---- ground grid, one line per 100 mm -------------------------------
   const gridSpan = Math.max(RAW.bbox.size[0], RAW.bbox.size[1]) * 3 + 0.4;
@@ -455,6 +598,103 @@
   }
   syncLabels();
 
+  // ---- pose controls and write-back ------------------------------------
+  // The point of this panel: a human moves a joint and the page hands back
+  // *text*, not a mesh. Section 10 -- "the app writes back a parameter or
+  // constraint edit, not an opaque mesh mutation ... Human correction becomes
+  // machine-legible input. That feedback loop is the actual product."
+  //
+  // Assigned rather than declared, and first called at the very bottom: this
+  // runs before the render state below exists, and `refreshPose` draws.
+  let refreshPose = null;
+  if (RIG) {
+    el("posesect").hidden = false;
+    const movable = RIG.joints.filter((j) => !j.locked);
+    const rows = {};
+
+    movable.forEach((j) => {
+      const row = document.createElement("label");
+      row.className = "row";
+      const name = document.createElement("span");
+      name.textContent = j.name;
+      name.style.flex = "0 0 74px";
+      const sl = document.createElement("input");
+      sl.type = "range";
+      // The slider *is* the declared limit. A joint cannot be dragged out of
+      // range, so a pose taken from this page is always one the rig allows.
+      sl.min = j.limit[0]; sl.max = j.limit[1];
+      sl.step = 0.1; sl.value = j.start;
+      sl.setAttribute("aria-label", j.name + " angle in degrees");
+      const val = document.createElement("b");
+      val.className = "val";
+      row.append(name, sl, val);
+      el("joints").appendChild(row);
+      rows[j.name] = { row: row, slider: sl, val: val, j: j };
+      sl.addEventListener("input", () => {
+        pose[j.name] = +sl.value;
+        refreshPose();
+      });
+    });
+
+    const fmt = (v) => (Math.round(v * 10) / 10).toFixed(1);
+
+    function writeback() {
+      // Only the joints that actually moved. `forward()` defaults everything
+      // else to rest, so a short diff and a full dump mean the same thing --
+      // and the short one is the one a human can check at a glance.
+      const moved = movable.filter((j) => Math.abs(pose[j.name] - j.start) > 0.05);
+      if (!moved.length) {
+        return "# " + RIG.name + "\n# unchanged — move a joint to write a pose";
+      }
+      const w = Math.max(...moved.map((j) => j.name.length));
+      const lines = moved.map((j) =>
+        "    " + JSON.stringify(j.name) + ":" +
+        " ".repeat(w - j.name.length + 1) + "deg(" + fmt(pose[j.name]) + "),");
+      return "# " + RIG.name + " — " + moved.length + " joint"
+             + (moved.length === 1 ? "" : "s") + " changed\n"
+             + "pose = {\n" + lines.join("\n") + "\n}";
+    }
+
+    refreshPose = function () {
+      let pinned = 0;
+      movable.forEach((j) => {
+        const r = rows[j.name], v = pose[j.name];
+        r.slider.value = v;
+        r.val.textContent = fmt(v) + "°";
+        const at = Math.abs(v - j.limit[0]) < 1e-6 || Math.abs(v - j.limit[1]) < 1e-6;
+        r.row.classList.toggle("atlimit", at);
+        if (at) pinned++;
+      });
+      el("posenote").textContent = movable.length + " movable joint"
+        + (movable.length === 1 ? "" : "s")
+        + (pinned ? " · " + pinned + " at a declared limit" : "");
+      el("writeback").value = writeback();
+      applyPose();
+      draw();
+    };
+
+    [["Reset", () => { movable.forEach((j) => { pose[j.name] = j.start; }); }],
+     ["Copy", null]].forEach(([label, act]) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = () => {
+        if (act) { act(); refreshPose(); return; }
+        // Selecting the textarea works with no permissions and no clipboard
+        // API, so the copy path still exists in a sandboxed frame.
+        const ta = el("writeback");
+        ta.focus(); ta.select();
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(ta.value);
+          } else { document.execCommand("copy"); }
+          b.textContent = "Copied";
+          setTimeout(() => { b.textContent = "Copy"; }, 1200);
+        } catch (e) { b.textContent = "Select → copy"; }
+      };
+      el("posebtns").appendChild(b);
+    });
+  }
+
   const VIEWS = { Front: [-Math.PI/2, Math.PI/2], Back: [Math.PI/2, Math.PI/2],
                   Left: [Math.PI, Math.PI/2], Right: [0, Math.PI/2],
                   Top: [-Math.PI/2, 0.02], Iso: [-0.62, 1.06] };
@@ -601,6 +841,6 @@
   if (mq.addEventListener) mq.addEventListener("change", draw);
   new MutationObserver(draw).observe(document.documentElement,
     { attributes: true, attributeFilter: ["data-theme"] });
-  draw();
+  if (refreshPose) { refreshPose(); } else { draw(); }
 })();
 </script>
