@@ -18,7 +18,24 @@ import unittest
 import numpy as np
 
 import lathe.build as B
+from lathe import pose as P
 from lathe.viewer import to_html, write
+
+
+def _arm_rig():
+    """A two-hinge arm, one part per joint, overlapping across each pivot."""
+    sk = P.Skeleton((
+        P.Joint("base", axis=(0.0, 0.0, 1.0)),
+        P.Joint("lower", parent="base", offset=(0.0, 0.0, 0.08),
+                axis=(0.0, 1.0, 0.0), limit=(-P.deg(90), P.deg(90))),
+        P.Joint("upper", parent="lower", offset=(0.0, 0.0, 0.34),
+                axis=(0.0, 1.0, 0.0), limit=(-P.deg(140), P.deg(140))),
+        P.Joint("head", parent="upper", offset=(0.0, 0.0, 0.30), limit=(0.0, 0.0)),
+    ))
+    return (P.Rig(sk, name="SM_LampArm_Steel_LOD0")
+            .bind("base", B.cylinder(0.10, 0.09, segments=16, center=False, tag="base"))
+            .bind("lower", B.box(0.05, 0.05, 0.34, tag="lower").at(z=0.25))
+            .bind("upper", B.box(0.045, 0.045, 0.32, tag="upper").at(z=0.57)))
 
 
 def _cube(tag="body"):
@@ -186,6 +203,122 @@ class TestStats(unittest.TestCase):
     def test_genus_counts_a_through_hole(self):
         holed = B.box(0.2, 0.2, 0.2, tag="body") - B.box(0.05, 0.4, 0.05, tag="cut")
         self.assertEqual(_payload(to_html(holed))["stats"]["genus"], 1)
+
+
+class TestRigPage(unittest.TestCase):
+    """A Rig subject turns the preview into a posing surface.
+
+    The kinematics themselves live in `lathe/pose/tests`, and the JavaScript
+    needs a browser. What is checkable here is the contract between them: that
+    the page is handed everything it needs to pose the model, and nothing that
+    contradicts the kernel.
+    """
+
+    def setUp(self):
+        self.rig = _arm_rig()
+        self.data = _payload(to_html(self.rig))
+
+    def test_an_ordinary_solid_carries_no_rig(self):
+        """The posing payload is additive. Every existing page is unaffected."""
+        plain = _payload(to_html(_cube()))
+        for key in ("rig", "jnt", "edgeJnt"):
+            self.assertNotIn(key, plain)
+
+    def test_the_skeleton_ships_with_its_limits(self):
+        """A slider is built from the declared limit, so a pose taken off this
+        page is always one the rig allows. Ship the limit or that guarantee is
+        just a hope."""
+        joints = {j["name"]: j for j in self.data["rig"]["joints"]}
+        self.assertEqual(sorted(joints), ["base", "head", "lower", "upper"])
+        self.assertEqual(joints["lower"]["limit"], [-90.0, 90.0])
+        self.assertEqual(joints["upper"]["limit"], [-140.0, 140.0])
+        self.assertEqual(joints["lower"]["parent"], "base")
+
+    def test_a_welded_joint_is_flagged_rather_than_omitted(self):
+        """The tip still has to appear -- it is a named point the program can
+        target -- but it must not get a slider that does nothing."""
+        joints = {j["name"]: j for j in self.data["rig"]["joints"]}
+        self.assertTrue(joints["head"]["locked"])
+        self.assertFalse(joints["lower"]["locked"])
+
+    def test_joints_arrive_parents_before_children(self):
+        """The page walks this list once to accumulate world matrices, so a
+        child ahead of its parent would read a matrix that is not there yet."""
+        order = [j["name"] for j in self.data["rig"]["joints"]]
+        seen = set()
+        for j in self.data["rig"]["joints"]:
+            if j["parent"] is not None:
+                self.assertIn(j["parent"], seen, "%s precedes its parent" % j["name"])
+            seen.add(j["name"])
+        self.assertEqual(order[0], "base")
+
+    def test_rest_world_positions_match_the_kernel(self):
+        """These are what the page checks its own kinematics against, so they
+        have to be Python's answer and not a restatement of the offsets."""
+        world = P.positions(self.rig.skeleton)
+        for j in self.data["rig"]["joints"]:
+            np.testing.assert_allclose(j["restWorld"], world[j["name"]], atol=1e-9)
+
+    def test_every_corner_names_the_joint_that_drives_it(self):
+        """One bone per vertex. A corner with no joint could not be posed, and a
+        corner naming a joint that carries no geometry could not be drawn."""
+        jnt = _decode(self.data["jnt"], np.float32)
+        pos = _decode(self.data["pos"], np.float32)
+        self.assertEqual(len(jnt), len(pos) // 3)
+        bound = self.data["rig"]["bound"]
+        self.assertEqual(sorted(set(jnt.tolist())),
+                         [float(i) for i in range(len(bound))])
+
+    def test_wire_edges_are_driven_too(self):
+        """The wireframe moves with the mesh or it detaches on the first hinge."""
+        ej = _decode(self.data["edgeJnt"], np.float32)
+        edge = _decode(self.data["edge"], np.float32)
+        self.assertEqual(len(ej), len(edge) // 3)
+
+    def test_parts_stay_separable_rather_than_welded(self):
+        """`Rig.posed()` unions, which welds the parts into one vertex set and
+        makes a hinge impossible. The drawn geometry must be the parts."""
+        drawn = len(_decode(self.data["pos"], np.float32)) // 9
+        self.assertEqual(drawn, sum(p.n_tris for p in self.rig.bindings.values()))
+
+    def test_statistics_describe_the_assembled_asset(self):
+        """The HUD reports what gets budgeted, verified and exported -- the
+        union -- not the loose parts the viewer happens to draw. Those are
+        different numbers, and the panel must not mix them."""
+        assembled = self.rig.at_rest()
+        self.assertEqual(self.data["stats"]["tris"], assembled.n_tris)
+        self.assertEqual(sum(self.data["tagTris"]), assembled.n_tris)
+        self.assertNotEqual(self.data["stats"]["tris"],
+                            len(_decode(self.data["pos"], np.float32)) // 9)
+
+    def test_a_starting_pose_becomes_the_baseline(self):
+        """Reset returns here and the write-back diffs against it: the user
+        wants to send the change they made, not the change since the joint
+        tree's zero."""
+        data = _payload(to_html(self.rig, pose={"lower": P.deg(-35)}))
+        joints = {j["name"]: j for j in data["rig"]["joints"]}
+        self.assertAlmostEqual(joints["lower"]["start"], -35.0, places=4)
+        self.assertAlmostEqual(joints["upper"]["start"], 0.0, places=4)
+        # The structural rest is a separate number and must not have moved.
+        np.testing.assert_allclose(joints["lower"]["restWorld"], [0, 0, 0.08], atol=1e-9)
+
+    def test_the_page_carries_the_pose_panel_and_a_writeback_box(self):
+        html = to_html(self.rig)
+        self.assertIn('id="posesect"', html)
+        self.assertIn('id="writeback"', html)
+        self.assertIn("pose = {", html)          # the emitted form, in the page
+
+    def test_a_rig_page_is_still_self_contained(self):
+        for m in re.finditer(r'(?:src|href)\s*=\s*"([^"]+)"', to_html(self.rig)):
+            self.assertFalse(m.group(1).startswith(("http:", "https:", "//")))
+
+    def test_writing_a_rig_reports_the_assembled_triangles(self):
+        with tempfile.TemporaryDirectory(prefix="lathe_rig_") as tmp:
+            dest = os.path.join(tmp, "arm.html")
+            info = write(self.rig, dest, pose={"lower": P.deg(20)})
+            self.assertTrue(os.path.exists(dest))
+            self.assertEqual(info["tris"], self.rig.at_rest().n_tris)
+            self.assertTrue(info["self_contained"])
 
 
 class TestWrite(unittest.TestCase):
