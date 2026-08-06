@@ -88,6 +88,20 @@ class TestPageShape(unittest.TestCase):
         for tag in ("<!doctype", "<html", "<head>", "<body"):
             self.assertNotIn(tag, low)
 
+    def test_declares_utf8_before_any_non_ascii(self):
+        """`write()` emits UTF-8 with no BOM, and there is no `<head>` for a
+        wrapper to have declared the encoding in. Without a charset the browser
+        reported windows-1252 and every non-ASCII glyph mojibaked -- the degree
+        sign on a joint readout, and the em dash in the write-back a human is
+        meant to paste back into a program. Declared inside the first 1024
+        bytes, because past that the parser stops looking."""
+        head = self.html[:1024].lower()
+        self.assertIn('<meta charset="utf-8">', head)
+        first = next((i for i, c in enumerate(self.html) if ord(c) > 127), None)
+        if first is not None:
+            self.assertLess(self.html.lower().index('<meta charset="utf-8">'),
+                            first, "a non-ASCII byte precedes the declaration")
+
     def test_declares_a_title_and_names_the_asset(self):
         self.assertIn("<title>SM_Test_Cube_LOD0</title>", self.html)
         self.assertIn("SM_Test_Cube_LOD0", self.html)
