@@ -226,6 +226,83 @@ def bowtie_vertex() -> Asset:
     return Asset(mesh, solid_spec(origin=None))
 
 
+def bowtie_vertex_split() -> Asset:
+    """E101 only, and only because topology welds on position.
+
+    The `bowtie_vertex` boxes again, but as two vertex sets that merely
+    coincide at the shared corner. In index space nothing touches: an
+    index-only walk reports two clean shells and misses the pinch entirely.
+    That is the shape a bowtie takes after any export, since an exporter never
+    shares a corner between faces with different normals.
+    """
+    s = DEFAULT_SIZE
+    a = box_mesh("SM_Crate_Wood_LOD0", boxes=[(0.0, s, 0.0, s, 0.0, s)], with_uv=False)
+    b = box_mesh("SM_Crate_Wood_LOD0", boxes=[(s, 2 * s, s, 2 * s, s, 2 * s)], with_uv=False)
+    faces = a.faces + tuple(tuple(i + a.num_verts for i in f) for f in b.faces)
+    mesh = AssetMesh(
+        name="SM_Crate_Wood_LOD0",
+        verts=np.vstack([a.verts, b.verts]),
+        faces=faces,
+    )
+    return Asset(mesh, solid_spec(origin=None))
+
+
+def flat_shaded_prism(sides: int = 6, height: float = 0.6, radius: float = 0.3) -> Asset:
+    """ZERO findings. A closed prism with triangulated caps, as a flat-shaded
+    glTF export delivers it.
+
+    An exporter writes one vertex per distinct (position, normal) pair. Flat
+    shading gives every face its own normal, so every wall quad here carries
+    its own four vertices. On a planar cap the per-face normals are equal only
+    up to float noise, so the exporter shares cap vertices in arbitrary
+    groups; this fixture uses the worst case, two interleaved groups, so no two
+    edge-adjacent cap triangles share a copy.
+
+    Read by index that mesh is ten open pieces with 48 boundary edges, and each
+    cap hub is two "bowties": triangles that touch at one copy but never along
+    an edge. E101 reported exactly that on ten objects of a real vehicle, all
+    of which Blender's own manifold check called clean. The surface IS clean: closed,
+    consistently wound, one shell. Position welding is what lets the
+    verifier say so, and `tests/test_rules.py` also checks the index-only
+    reading, so the fixture is proven to exercise the failure.
+    """
+    verts: List[Tuple[float, float, float]] = []
+
+    def add(p) -> int:
+        verts.append((float(p[0]), float(p[1]), float(p[2])))
+        return len(verts) - 1
+
+    def ring(z: float) -> List[Tuple[float, float, float]]:
+        return [(radius * math.cos(2.0 * math.pi * i / sides),
+                 radius * math.sin(2.0 * math.pi * i / sides), z) for i in range(sides)]
+
+    lo, hi = ring(0.0), ring(height)
+    faces: List[Tuple[int, ...]] = []
+    for i in range(sides):
+        j = (i + 1) % sides
+        faces.append((add(lo[i]), add(lo[j]), add(hi[j]), add(hi[i])))  # outward wall
+    for cap, upward in ((lo, False), (hi, True)):
+        # Copies are made on demand. An exporter writes no vertex that no
+        # face references, and an unreferenced copy is a real E105 loose vert.
+        copies: Dict[Tuple[int, int], int] = {}
+
+        def corner(group: int, i: int) -> int:
+            if (group, i) not in copies:
+                copies[(group, i)] = add(cap[i])
+            return copies[(group, i)]
+
+        for k in range(1, sides - 1):
+            g = k % 2
+            a, b, c = corner(g, 0), corner(g, k), corner(g, k + 1)
+            faces.append((a, b, c) if upward else (a, c, b))
+    mesh = AssetMesh(
+        name="SM_Column_Stone_LOD0",
+        verts=np.array(verts, dtype=np.float64),
+        faces=tuple(faces),
+    )
+    return Asset(mesh, solid_spec())
+
+
 def open_shell() -> Asset:
     """E101 only. A box with the top face deleted -- the classic 'boolean left a
     hole' shape."""
@@ -707,6 +784,8 @@ EXPECTED: Dict[str, Tuple[str, ...]] = {
     "fixed_crate": (),
     "nonmanifold_edge": ("E101",),
     "bowtie_vertex": ("E101",),
+    "bowtie_vertex_split": ("E101",),
+    "flat_shaded_prism": (),
     "open_shell": ("E101",),
     "ngon_prism": ("E102",),
     "flipped_face": ("E103",),

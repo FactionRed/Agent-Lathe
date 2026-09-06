@@ -206,6 +206,12 @@ class EmitSpec:
     textures: Tuple[TextureDecl, ...] = ()
     bake: Optional[BakeSpec] = None
     unit_scale: float = 1.0  # metres per mesh unit
+    # Vertices closer than this are one vertex for every connectivity question
+    # (E101, E103, E105, E108). Exporters split a vertex per (position,
+    # normal), so an imported flat-shaded mesh arrives with several copies of
+    # each corner; the weld puts them back before anything is counted. None or
+    # 0 reads the mesh by index, exactly as it arrived. See topology.py.
+    weld_tolerance: Optional[float] = 1e-6  # mesh units
     articulation: Optional[ArticulationSpec] = None
 
     def budget_for_lod(self) -> Optional[int]:

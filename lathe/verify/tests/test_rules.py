@@ -11,15 +11,70 @@ off than one that never had it, because it now also believes it was checked.
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from .. import fixtures
 from ..engine import RULES, get_profile, run
 from ..findings import ERROR, NOTE, WARN
+from ..mesh import Asset
 from ..topology import Topology
 
 
 def report_for(name: str, profile=None):
     return run(getattr(fixtures, name)(), profile)
+
+
+class TestPositionWeld(unittest.TestCase):
+    """Connectivity is measured on positions, not on vertex indices.
+
+    Both arms are asserted. The welded reading must be clean, AND the
+    index-only reading of the same mesh must be broken, or the fixture could
+    pass by never having exercised the failure it exists for.
+    """
+
+    def test_flat_shaded_export_is_one_closed_shell(self):
+        topo = Topology(fixtures.flat_shaded_prism().mesh)
+        self.assertEqual(len(topo.components), 1)
+        self.assertEqual(topo.bowtie_verts, ())
+        self.assertEqual(topo.boundary_edges, ())
+        self.assertEqual(topo.nonmanifold_edges, ())
+        self.assertEqual(topo.inconsistent_edges, ())
+        # 44 corners on 12 positions: the 32 duplicates are used, not loose.
+        self.assertEqual(topo.duplicate_verts, 32)
+        self.assertEqual(topo.loose_verts, ())
+        shell = topo.components[0]
+        self.assertTrue(shell.closed and shell.consistent)
+        self.assertGreater(shell.signed_volume, 0.0)
+
+    def test_index_only_reading_of_the_same_mesh_is_broken(self):
+        """The control arm. This is what E101 and E108 reported on a real
+        flat-shaded GLB before the weld existed."""
+        topo = Topology(fixtures.flat_shaded_prism().mesh, weld=None)
+        self.assertEqual(topo.duplicate_verts, 0)
+        self.assertGreater(len(topo.bowtie_verts), 0)
+        self.assertGreater(len(topo.boundary_edges), 0)
+        self.assertGreater(len(topo.components), 1)
+
+    def test_split_indices_do_not_hide_a_real_bowtie(self):
+        mesh = fixtures.bowtie_vertex_split().mesh
+        self.assertEqual(len(Topology(mesh, weld=None).bowtie_verts), 0)
+        self.assertEqual(len(Topology(mesh).bowtie_verts), 1)
+        self.assertEqual(len(Topology(mesh).components), 1)
+
+    def test_weld_is_a_no_op_on_a_welded_mesh(self):
+        mesh = fixtures.clean_solid().mesh
+        welded, raw = Topology(mesh), Topology(mesh, weld=None)
+        self.assertEqual(welded.duplicate_verts, 0)
+        self.assertEqual(welded.faces, raw.faces)
+        self.assertEqual(len(welded.components), len(raw.components))
+
+    def test_tolerance_is_declared_on_the_spec(self):
+        """weld_tolerance = 0 on the EmitSpec reads by index, so a card
+        profile that wants coincident double-sided faces kept apart can say so."""
+        asset = fixtures.flat_shaded_prism()
+        by_index = run(Asset(asset.mesh, replace(asset.spec, weld_tolerance=0.0)))
+        self.assertIn("E101", by_index.codes)
+        self.assertNotIn("E101", run(asset).codes)
 
 
 class TestFixtureTable(unittest.TestCase):

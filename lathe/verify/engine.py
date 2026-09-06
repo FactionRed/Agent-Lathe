@@ -192,7 +192,7 @@ class RuleContext:
     @property
     def topology(self) -> Topology:
         if "topology" not in self._cache:
-            self._cache["topology"] = Topology(self.mesh)
+            self._cache["topology"] = Topology(self.mesh, weld=self.emit.weld_tolerance)
         return self._cache["topology"]
 
     def uv(self, set_name: Optional[str] = None) -> UVLayout:
