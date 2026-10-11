@@ -38,3 +38,8 @@ include = ["lathe*"]
 
 [tool.pytest.ini_options]
 testpaths = ["lathe"]
+# pytest's default norecursedirs includes "build", and lathe/build is a package
+# of ours. With the default, `pytest` and CI never collected anything under
+# lathe/build/tests -- 27 UV tests ran only when someone named the file.
+# This is pytest's default list with "build" removed.
+norecursedirs = [".*", "*.egg", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}"]

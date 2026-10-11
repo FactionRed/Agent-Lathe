@@ -64,6 +64,14 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
 
     only_tags restricts the bevel to edges whose *both* faces carry one of those
     tags, which is how you bevel a seat without touching the legs.
+
+    `width` is the distance from the edge along each adjacent face. With
+    clamp=True, the default, it is a *ceiling*, not a promise: bmesh shrinks the
+    bevel where it fears overlap, by an amount that depends on incidental
+    geometry, and the returned Solid does not say it did. Measured on curved
+    input an 8 mm request delivered 3.4 to 7.6 mm. clamp=False delivers the
+    width exactly and raises if the result is not a valid manifold, but cannot
+    promise the surface does not fold over itself. DESIGN.md section 14.7.
     """
     exe = blender_path()
     if exe is None:

@@ -787,10 +787,40 @@ system adoptable before it is trusted.
    fixing, and the count of them is now the metric. Import also confirms the polygonal
    choice is the right target: a glTF primitive is triangles, so a merged type loses
    nothing on the way in, while the verifier keeps the n-gon it needs on the way out.
-7. Does the bevel decision survive curved input? Every fixture in the spike is
-   axis-aligned planar boxes, because the geometric referee cannot grade a fillet on a
-   cylinder or revolve. That is exactly where OCCT fillets fail in practice and where
-   bmesh bevel looks worst, so the §11 choice rests on the easy case. Extend the referee
-   before trusting it further.
+7. ~~Does the bevel decision survive curved input?~~ **Mostly, with one defect and one
+   caveat — see below.** Every fixture in the spike was an axis-aligned box, because its
+   referee named reference planes by hand. `lathe/build/tests/bevel_truth.py` replaces that
+   for any faceted solid of revolution. A solid revolved in *n* segments is a stack of regular
+   *n*-gons, so in (apothem, z) space it is a plain 2D polygon and volume, per-tag area and
+   per-triangle provenance are closed forms over it, independent of anything bmesh does.
+   Cylinders, a cone, a bowl and a two-tag stepped body (which has a concave corner) were
+   graded; `lathe/build/tests/test_bevel_curved.py` pins what was measured.
+
+   *Held.* Provenance is exact: zero mis-tagged triangles on every fixture, including the
+   concave corner and the tag boundary — §5.2's claim survives curvature. Geometry is exact
+   to ~1e-7 in volume and area whenever the requested width is delivered, and facet edges
+   (7.5° at 48 segments) are correctly not treated as features under the default
+   `min_dihedral=30`.
+
+   *Caveat — `profile=0.5` is not a circle off a right angle.* bmesh draws the quadrant in
+   the frame whose axes are the two faces, so at 90° it is a circle and at any other angle an
+   ellipse with the same endpoints. At 76° and 6 mm that is 0.9% off a true fillet in bevel
+   area and 8e-5 in volume. Harmless for a game asset; wrong to quote as a radius.
+
+   *Defect — the default `clamp=True` silently under-delivers width.* On the stepped fixture
+   an 8 mm request delivered 3.4 to 7.6 mm depending on the step's radius, was non-monotonic
+   in it, and returned a valid, correctly tagged, single-component solid: the bevel area is
+   41% off and nothing reports it. On a bowl rim a 2 mm request under-delivered by 1%. With
+   `clamp=False` the same requests are exact. This is §13's silent-selector failure in a new
+   place — a parameter that means one thing and does another with no error — and it is
+   pinned as an `expectedFailure` so it flips loudly when closed. Not yet decided: whether
+   the default should change, or `bevel()` should measure and report the delivered width.
+   `clamp=False` can produce overlapping geometry on a genuinely too-large width, and the
+   referee has no closed form for that case.
+
+   *Not done.* OCCT was not re-run on curved input, so the *comparison* that §11 rests on is
+   still one-sided: bmesh is now known to be good on curved input, not known to be better
+   than the alternative there. Solids that are not revolutions (a swept or lofted body) have
+   no 2D reduction, so this referee does not reach them.
 8. Bevel currently costs 2.9 s, of which 2.5 s is Blender process startup. A persistent
    worker is the obvious fix and is untested.
