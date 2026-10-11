@@ -807,16 +807,29 @@ system adoptable before it is trusted.
    ellipse with the same endpoints. At 76° and 6 mm that is 0.9% off a true fillet in bevel
    area and 8e-5 in volume. Harmless for a game asset; wrong to quote as a radius.
 
-   *Defect — the default `clamp=True` silently under-delivers width.* On the stepped fixture
-   an 8 mm request delivered 3.4 to 7.6 mm depending on the step's radius, was non-monotonic
-   in it, and returned a valid, correctly tagged, single-component solid: the bevel area is
-   41% off and nothing reports it. On a bowl rim a 2 mm request under-delivered by 1%. With
+   *Defect — the default `clamp=True` under-delivers width, and used to say nothing.* On the
+   stepped fixture an 8 mm request delivered 3.4 to 7.6 mm depending on the step's radius,
+   was non-monotonic in it, and returned a valid, correctly tagged, single-component solid:
+   the bevel area is 41% off. On a bowl rim a 2 mm request under-delivered by 1%. With
    `clamp=False` the same requests are exact. This is §13's silent-selector failure in a new
-   place — a parameter that means one thing and does another with no error — and it is
-   pinned as an `expectedFailure` so it flips loudly when closed. Not yet decided: whether
-   the default should change, or `bevel()` should measure and report the delivered width.
-   `clamp=False` can produce overlapping geometry on a genuinely too-large width, and the
-   referee has no closed form for that case.
+   place — a parameter that means one thing and does another with no error.
+
+   *Mechanism.* bmesh's clamp is **global**: it picks one width small enough that nothing
+   anywhere overlaps, so a single thin feature shrinks every bevel on the model, and every
+   edge reports the same shortfall (192 of 192 here). That also explains the
+   non-monotonicity: the width is a minimum over the whole body, not a property of any edge.
+   The shipped chair was hit by it: its 2 mm bevel delivers 0.99 mm on all 204 edges.
+
+   *Decision: report, do not flip the default.* `clamp=False` can fold the surface over
+   itself on a genuinely too-large width, and no referee has a closed form for that, so
+   making it the default would trade a reported shortfall for an unreportable fault.
+   `bevel()` now measures the width actually delivered on each picked edge, from the output
+   mesh and the pre-bevel face planes, and returns it as `Solid.bevel_report`. `lathe_apply`
+   prints a `!` note when any edge came out short, naming the worst edge and the way out.
+   The measurement is per face, because the first version (every bevel vertex near an edge)
+   let a neighbour's strip lend its width and read a 62.5% clamp as 88%. It is checked
+   against the referee: bevelling again with `clamp=False` at the reported width gives the
+   same solid. The delivery gap itself stays pinned as an `expectedFailure`.
 
    *Not done.* OCCT was not re-run on curved input, so the *comparison* that §11 rests on is
    still one-sided: bmesh is now known to be good on curved input, not known to be better

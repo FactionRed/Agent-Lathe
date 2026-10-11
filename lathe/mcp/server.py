@@ -222,6 +222,11 @@ async def lathe_apply(params: ApplyInput) -> str:
         On failure, a CARDINALITY ASSERTION FAILED or PROGRAM ERROR block naming
         the line and what to do about it.
 
+        A bevel that delivered less width than you asked for is flagged with a
+        `!` line naming the worst edge. The solid is still valid and correctly
+        tagged -- bmesh's clamp shrinks the whole bevel to the thinnest feature --
+        so that line is the only place the shortfall shows.
+
     Examples:
         - "make a 600 mm crate with five slots" -> a program ending
           `result = carved`, with `assert_count(rim, 96)` guarding the bevel.
@@ -253,6 +258,13 @@ async def lathe_apply(params: ApplyInput) -> str:
     parts.append("  branch %s   parent %s   geometry %s   language %s"
                  % (commit.branch, commit.parent or "(root)", commit.geom_hash,
                     commit.language))
+    # A bevel that delivered less than it was asked for is valid, correctly
+    # tagged and silent, which is the failure this surface exists to refuse.
+    for note in commit.bevel_notes:
+        head, _, tail = note.partition("\n")
+        parts.append("\n  ! %s" % head)
+        if tail:
+            parts.append("    %s" % tail.replace("\n", "\n    "))
     if diff:
         parts.append("\nprogram diff\n" + diff)
     try:

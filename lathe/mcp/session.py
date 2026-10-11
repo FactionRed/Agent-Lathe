@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .. import build as B
+from ..build.bevel import collecting_reports
 from ..build.solid import CardinalityError, LatheError, Solid
 
 
@@ -53,6 +54,9 @@ class Commit:
     spec: Dict[str, Any]
     created: float
     language: str = "python"
+    # One note per bevel() whose delivered width fell short of the request. A
+    # bevel that delivered in full is not worth a line, so absence means "fine".
+    bevel_notes: Tuple[str, ...] = ()
 
     def short(self) -> str:
         return "%s  %-28s %6d tris  %d comp  %s" % (
@@ -196,11 +200,22 @@ class Workspace:
 
     # -- apply -------------------------------------------------------------
 
-    def _run(self, program: str,
-             language: str = "python") -> Tuple[Solid, Dict[str, Any]]:
-        if language == "lathe":
-            return self._run_lathe(program)
-        return self._run_python(program)
+    def _run(self, program: str, language: str = "python"
+             ) -> Tuple[Solid, Dict[str, Any], Tuple[str, ...]]:
+        """Run a program. Returns (solid, spec, bevel notes).
+
+        The notes are collected here, not read off the result Solid: the result
+        is usually a boolean or a transform downstream of the bevel, and a report
+        that only rode on the bevel's own Solid would be gone by then.
+        """
+        with collecting_reports() as reports:
+            if language == "lathe":
+                solid, spec = self._run_lathe(program)
+            else:
+                solid, spec = self._run_python(program)
+        notes = tuple(
+            r.describe() + "\n" + r.advice() for r in reports if r.clamped)
+        return solid, spec, notes
 
     def _run_lathe(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
         """Parse and walk a .lathe program. No exec, no builtins, no imports."""
@@ -293,7 +308,7 @@ class Workspace:
         if cid in self.commits:
             return self.commits[cid], self.solid(cid), "", False
 
-        solid, spec = self._run(program, lang)
+        solid, spec, notes = self._run(program, lang)
         msh = solid.mesh()
         geom = hashlib.sha256(
             msh.verts.tobytes() + msh.tris.tobytes()).hexdigest()[:12]
@@ -304,6 +319,7 @@ class Workspace:
             n_components=solid.components(), volume=solid.volume(),
             geom_hash=geom, tags=tuple(sorted(set(solid.tags.values()))),
             spec=dict(spec), created=time.time(), language=lang,
+            bevel_notes=notes,
         )
         self.commits[cid] = c
         self._solids[cid] = solid

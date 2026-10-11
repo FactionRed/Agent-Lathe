@@ -96,6 +96,25 @@ def main():
         _write(out_path, bm, lay, report)
         return
 
+    # Where the picked edges are *before* the bevel moves everything, with the
+    # plane of each adjacent face and the direction into it. The wrapper measures
+    # the width actually delivered against these, because bmesh does not say
+    # when clamp_overlap shrank it. Row layout: a, b, then (normal, inward) for
+    # each of the two faces.
+    picked_xyz = []
+    for e in picked:
+        row = [list(e.verts[0].co), list(e.verts[1].co)]
+        for f in e.link_faces:
+            # The edge as this face winds it: inward is to its left.
+            d_f = None
+            for loop in f.loops:
+                if loop.edge == e:
+                    d_f = loop.link_loop_next.vert.co - loop.vert.co
+                    break
+            inward = f.normal.cross(d_f).normalized()
+            row += [list(f.normal), list(inward)]
+        picked_xyz.append(row)
+
     # 3. Bevel.
     res = bmesh.ops.bevel(
         bm, geom=picked, offset=float(p["width"]), offset_type="OFFSET",
@@ -121,10 +140,10 @@ def main():
                           ngon_method="BEAUTY")
     bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
     report["status"] = "ok"
-    _write(out_path, bm, lay, report)
+    _write(out_path, bm, lay, report, picked_xyz)
 
 
-def _write(out_path, bm, lay, report):
+def _write(out_path, bm, lay, report, picked_xyz=()):
     bm.verts.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
     for i, v in enumerate(bm.verts):
@@ -143,6 +162,7 @@ def _write(out_path, bm, lay, report):
         verts=verts,
         tris=np.array(tris, dtype=np.int64).reshape(-1, 3),
         part_id=np.array(parts, dtype=np.int64),
+        picked_edges=np.array(picked_xyz, dtype=np.float64).reshape(-1, 6, 3),
         report=np.array([json.dumps(report)]),
     )
     bm.free()
