@@ -21,7 +21,7 @@ import os
 import sys
 import tempfile
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP, Image
 from pydantic import BaseModel, ConfigDict, Field
@@ -109,7 +109,12 @@ class ApplyInput(BaseModel):
     program: str = Field(
         ...,
         description=(
-            "Python source that builds geometry and assigns the finished Solid to "
+            "A program in `.lathe` (preferred: units are part of the type, so "
+            "`600` is an error and `600mm` is not) or in Python. `.lathe` "
+            "starts with `param`, `let` or `emit` and declares what the verifier "
+            "checks in its `emit \"NAME\" { ... }` block -- see the tool "
+            "description. Python source builds geometry and assigns the finished "
+            "Solid to "
             "`result`. The lathe.build API is already in scope -- do not import it. "
             "Optionally assign `spec` (a dict) to declare what the verifier should "
             "check. A rule with nothing to compare against reports itself as *not "
@@ -127,6 +132,12 @@ class ApplyInput(BaseModel):
         default=None,
         description=("Branch to commit on. Creates it from the current tip if new. "
                      "Omit to stay on the current branch."))
+    language: Literal["auto", "lathe", "python"] = Field(
+        default="auto",
+        description=("'auto' reads the first statement: `param`/`let`/`emit`/`unit`/"
+                     "`scene`/`mat`/`uv`/`joint`/`bind` followed by a name, or "
+                     "`emit \"...\"`, is .lathe; anything else is Python. Say "
+                     "'lathe' or 'python' to override."))
 
 
 @mcp.tool(
@@ -141,8 +152,38 @@ async def lathe_apply(params: ApplyInput) -> str:
     arguments -- there is no mode, no selection state and no active object, so the
     same program always produces the same geometry.
 
-    Write the program against the API below, addressing geometry by *semantic
-    selector* rather than by index. `carved.edges(dihedral_gt=60)` re-resolves on
+    Two languages, one result. `.lathe` is typed and inert -- it is parsed and
+    walked, never executed -- and is the one to reach for first:
+
+        param size  = 600mm
+        param slat_n = 5
+        let body   = box(size, size, size) @ origin(bottom_center)
+        let cutter = box(28mm, size * 1.1, size - 120mm) @ origin(center)
+        let slots  = array(cutter, axis = X, count = slat_n, span = size * 0.9)
+        let carved = body - slots
+        assert components(carved) == 1
+        let rim    = carved.edges(dihedral > 60deg, length > 20mm)
+        assert count(rim) == 68
+        let final  = bevel(carved, rim, width = 4mm, segments = 2)
+        emit "SM_Crate_Wood_LOD0" {
+          profile    : game_prop_pbr
+          budget     : { tris_lod0: 20000 }
+          components : 1
+          origin     : bottom_center
+        }
+
+    `600` where a length belongs is an error that says so; `600mm` and `0.6m` are
+    the same length. The `emit` block is what the verifier checks against.
+    Accepted keys: profile, target, budget, origin, components, texel_density,
+    texture_resolution. Any other key is refused, because an option that is
+    accepted and ignored reads as a pass. `.lathe` has no loops and no functions:
+    for procedural work, use the Python form below.
+
+    The Python form takes the API below. A bare `600` in it is metres, silently,
+    so prefer `mm(600)`.
+
+    In either language, address geometry by *semantic selector* rather than by
+    index. `carved.edges(dihedral_gt=60)` re-resolves on
     every evaluation, so an upstream edit does not invalidate it.
 
     Guard your assumptions with `assert_count`. It converts a selector silently
@@ -190,14 +231,17 @@ async def lathe_apply(params: ApplyInput) -> str:
           that is lathe_observe.
 
     Security note:
-        The program runs via `exec` in a namespace preloaded with the Lathe API.
-        That is a restricted namespace, NOT a sandbox: builtins are present, so a
-        program can reach the filesystem. This is intended for a local stdio
+        A Python program runs via `exec` in a namespace preloaded with the Lathe
+        API. That is a restricted namespace, NOT a sandbox: builtins are present,
+        so a program can reach the filesystem. This is intended for a local stdio
         server whose caller could already run Python. Do not expose it remotely.
+        A `.lathe` program is never executed -- there is no attribute access into
+        host objects, no imports and no builtins -- so it is the safer path.
     """
     try:
         commit, solid, diff, is_new = await _off_loop(
-            WS.apply, params.program, params.message, params.branch)
+            WS.apply, params.program, params.message, params.branch,
+            params.language)
     except Exception as exc:
         return _fail(exc)
 
@@ -206,8 +250,9 @@ async def lathe_apply(params: ApplyInput) -> str:
         parts.append("  no change: this program on this parent is already %s"
                      % commit.id)
     parts.append(_headline(solid, commit))
-    parts.append("  branch %s   parent %s   geometry %s"
-                 % (commit.branch, commit.parent or "(root)", commit.geom_hash))
+    parts.append("  branch %s   parent %s   geometry %s   language %s"
+                 % (commit.branch, commit.parent or "(root)", commit.geom_hash,
+                    commit.language))
     if diff:
         parts.append("\nprogram diff\n" + diff)
     try:

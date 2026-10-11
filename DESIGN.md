@@ -445,17 +445,22 @@ rich language does not.
 `apply` returning the validation report inline is important: the agent sees consequences
 in the same turn it makes the change, rather than needing to remember to look.
 
-**Built** — `lathe/mcp/`, twelve tools over stdio, 46 wire tests. Four notes from building it.
+**Built** — `lathe/mcp/`, twelve tools over stdio, 51 wire tests. Four notes from building it.
 
 `library()` is **omitted rather than stubbed**, because the parametric component library it
 searches does not exist. A tool that always returns nothing is worse than a tool the agent
 knows is absent.
 
-`apply` takes **Python**, not the §4 DSL — §14.3's `escape { python … }` promoted to the
-only mode. That is the honest state of the parser question, and it costs the unit types:
-a bare `600` in the build layer is a silent metres-versus-millimetres bug rather than a
-compile error. The *perception* layer does enforce units, which is why `raycast` requires
-one and `box` does not. The seam is visible from the outside, which is a reason to close it.
+`apply` took **Python** only at first — §14.3's `escape { python … }` promoted to the only
+mode — and that cost the unit types: a bare `600` in the build layer is a silent
+metres-versus-millimetres bug rather than a compile error. The language existed and was
+tested, and was not reachable from the only interface an agent uses. That seam is closed:
+`apply` reads `.lathe` too, chosen by `language`, defaulting to a read of the first
+statement. The `emit` block becomes the verifier's declared spec, and a key it does not
+understand is an error rather than a no-op — the same rule as §13's "a rule that never
+runs is not a rule", applied to a declaration that is never read. Python stays for what
+`.lathe` cannot say (loops, functions, `import_glb`), and a bare `600` there is still a
+silent bug.
 
 `apply` runs `exec` in a namespace preloaded with the API. That is a **restricted namespace,
 not a sandbox** — builtins are present. Acceptable for a local stdio server whose caller
