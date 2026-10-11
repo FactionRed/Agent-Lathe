@@ -31,13 +31,14 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install
         run: python -m pip install -e ".[dev]"
-      # No Blender on the runner. Every Blender-gated test skips by itself, and
-      # the README names which ones. What runs here is everything that does not
-      # need it, including the stdio wire test that spawns the real server.
+      # No Blender on the runner. Every test that needs it skips itself with a
+      # reason (`pytest -rs` lists them). What runs here is everything that does
+      # not, including the stdio wire test that spawns the real server.
       - name: Test
         run: python -m pytest -q
-      # The three test assets, built and gated by the verifier. Exits non-zero
-      # if any asset reports an error, so a rule change that breaks a shipped
-      # asset fails here rather than at the next demo.
-      - name: Build and verify the test assets
-        run: python models/build_all.py --no-render
+      # models/build_all.py is deliberately not run here: all three assets use
+      # bevel(), which needs Blender 5.2, and the runners have none. Run it
+      # locally before touching a verifier rule (`python models/build_all.py
+      # --no-render` exits non-zero if an asset reports an error). Installing a
+      # pinned Blender in CI would close this gap; it is a separate decision
+      # because of the download size and the version drift it invites.
