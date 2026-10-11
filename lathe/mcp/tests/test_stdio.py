@@ -47,6 +47,15 @@ spec = {"components": 1, "origin": "bottom_center", "budget": {"tris_lod0": 9000
 result = piece
 '''
 
+LATHE_PROGRAM = '''param w = 400mm
+let b = box(w, w, 50mm) @ origin(bottom_center)
+emit "SM_StdioLathe_LOD0" {
+  profile    : game_prop_pbr
+  budget     : { tris_lod0: 100 }
+  components : 1
+}
+'''
+
 PASS, FAIL = [], []
 
 
@@ -280,6 +289,34 @@ async def main():
                       str(kinds(r)))
             else:
                 print("  --   skipped observe and compare (pass --render)")
+
+            # -- the typed language, through the front door ----------------
+            # Last on purpose: it moves HEAD onto its own branch, and the
+            # sections above read whatever the tip is.
+            r = await s.call_tool("lathe_apply", {"params": {
+                "program": LATHE_PROGRAM, "branch": "stdio_lathe",
+                "message": "typed program"}})
+            body = text_of(r)
+            check("lathe_apply reads a .lathe program", "language lathe" in body,
+                  body[:160].replace("\n", " "))
+            check(".lathe program is named by its emit",
+                  "SM_StdioLathe_LOD0" in body)
+            check(".lathe emit block reaches the verifier",
+                  "declares no triangle budget" not in body
+                  and "over budget" not in body)
+
+            r = await s.call_tool("lathe_apply", {"params": {
+                "program": "let b = box(400, 400, 50)\nemit \"SM_Bare_LOD0\" {}\n",
+                "branch": "stdio_lathe"}})
+            body = text_of(r)
+            check("a bare number is refused over the wire",
+                  "PROGRAM ERROR" in body and "line 1" in body,
+                  body[:160].replace("\n", " "))
+
+            r = await s.call_tool("lathe_apply", {"params": {
+                "program": LATHE_PROGRAM, "language": "python",
+                "branch": "stdio_lathe"}})
+            check("language can be forced", "PROGRAM ERROR" in text_of(r))
 
     print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
     for f in FAIL:

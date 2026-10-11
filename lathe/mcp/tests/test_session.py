@@ -267,5 +267,157 @@ class TestCheckSeesUv(unittest.TestCase):
                          "the check path is still blind to UVs")
 
 
+LATHE_TABLE = '''
+param top_w  = 600mm
+param thick  = 40mm
+let top = box(top_w, top_w, thick) @ origin(bottom_center)
+assert components(top) == 1
+emit "SM_Lathe_Slab_LOD0" {
+  profile    : game_prop_pbr
+  budget     : { tris_lod0: 100 }
+  components : 1
+  origin     : bottom_center
+}
+'''
+
+
+class TestLatheLanguage(unittest.TestCase):
+    """`.lathe` reachable through the workspace, with the same guarantees.
+
+    The language existed, was tested, and was unreachable: lathe_apply took Python
+    only, so the one place `600` is a type error was not on the path an agent
+    uses. These pin the seam, not the language -- lathe/lang/tests covers that.
+    """
+
+    def setUp(self):
+        self.ws = Workspace()
+
+    def bad(self, src, **kw):
+        with self.assertRaises(ProgramError) as ctx:
+            self.ws.apply(src, **kw)
+        return str(ctx.exception)
+
+    # -- detection ---------------------------------------------------------
+
+    def test_detects_the_openers_that_cannot_be_python(self):
+        from lathe.mcp.session import detect_language
+        for src in ("param a = 1mm", "let b = box(1m, 1m, 1m)",
+                    '# note\n\n   emit "X" {}', "unit system = metric",
+                    "mat oak on top", "solve { reach head to (0m, 0m, 1m) }"):
+            self.assertEqual(detect_language(src), "lathe", src)
+
+    def test_python_assignments_to_lathe_words_stay_python(self):
+        from lathe.mcp.session import detect_language
+        for src in ("uv = 3\nresult = box(1, 1, 1)", "mat = None", "let_x = 1",
+                    CUBE, "# only a comment", ""):
+            self.assertEqual(detect_language(src), "python", repr(src))
+
+    # -- running -----------------------------------------------------------
+
+    def test_a_lathe_program_commits_with_its_emit_as_the_spec(self):
+        c, solid, _d, is_new = self.ws.apply(LATHE_TABLE, "slab")
+        self.assertTrue(is_new)
+        self.assertEqual(c.language, "lathe")
+        self.assertEqual(solid.name, "SM_Lathe_Slab_LOD0")
+        self.assertEqual(c.spec, {"profile": "game_prop_pbr",
+                                  "budget": {"tris_lod0": 100},
+                                  "components": 1, "origin": "bottom_center"})
+        lo, hi = solid.bbox()
+        self.assertAlmostEqual(hi[0] - lo[0], 0.6, places=6)
+
+    def test_python_programs_are_still_python(self):
+        c = self.ws.apply(CUBE)[0]
+        self.assertEqual(c.language, "python")
+
+    def test_repeating_a_lathe_program_is_a_no_op(self):
+        self.ws.apply(LATHE_TABLE)
+        self.assertFalse(self.ws.apply(LATHE_TABLE)[3])
+
+    def test_a_lathe_commit_replays_from_its_text(self):
+        c = self.ws.apply(LATHE_TABLE)[0]
+        self.ws._solids.clear()
+        self.assertEqual(self.ws.solid(c.id).name, "SM_Lathe_Slab_LOD0")
+        self.assertEqual(self.ws.commit(c.id).language, "lathe")
+
+    def test_language_can_be_forced_either_way(self):
+        # A Python program forced through the .lathe parser is a syntax error,
+        # and the converse -- neither silently falls back to the other.
+        self.assertIn("syntax error in the .lathe program",
+                      self.bad(CUBE, language="lathe"))
+        self.assertIn("SyntaxError", self.bad(LATHE_TABLE, language="python"))
+
+    def test_an_unknown_language_is_refused_before_any_branch_is_made(self):
+        with self.assertRaises(LatheError):
+            self.ws.apply(CUBE, branch="ghost", language="rust")
+        self.assertNotIn("ghost", self.ws.branches)
+
+    # -- what the language is for -------------------------------------------
+
+    def test_a_bare_number_is_a_unit_error_with_a_line_number(self):
+        msg = self.bad('param a = 1mm\nlet b = box(600, 600, 600)\n'
+                       'emit "SM_X_LOD0" {}')
+        self.assertIn("line 2", msg)
+        self.assertNotIn("Traceback", msg)
+
+    def test_a_syntax_error_names_the_line(self):
+        msg = self.bad('param a = 1mm\nlet b = = box(1m, 1m, 1m)\n')
+        self.assertIn("syntax error in the .lathe program", msg)
+        self.assertIn("line 2", msg)
+
+    def test_a_failed_assertion_is_a_program_error_not_a_crash(self):
+        msg = self.bad('let b = box(1m, 1m, 1m)\n'
+                       'assert components(b) == 2\nemit "SM_X_LOD0" {}')
+        self.assertIn("assertion failed", msg)
+
+    def test_a_failed_lathe_program_leaves_no_commit(self):
+        self.bad('let b = box(600, 600, 600)\nemit "SM_X_LOD0" {}')
+        self.assertEqual(self.ws.commits, {})
+
+    # -- the emit block is a declaration, so it must not be dropped ---------
+
+    def test_an_unknown_emit_key_is_refused_not_ignored(self):
+        msg = self.bad('let b = box(1m, 1m, 1m)\n'
+                       'emit "SM_X_LOD0" { profile: game_prop_pbr\n'
+                       '  polycount: 100 }')
+        self.assertIn("polycount", msg)
+        self.assertIn("Accepted", msg)
+
+    def test_lod_is_refused_with_the_reason(self):
+        msg = self.bad('let b = box(1m, 1m, 1m)\n'
+                       'emit "SM_X" { lod: 0 }')
+        self.assertIn("LOD chain", msg)
+
+    # -- end to end --------------------------------------------------------
+
+    def test_the_check_path_reads_the_emit_spec(self):
+        """E107 can only fire if the budget in `emit` reached the verifier.
+
+        The assertion is on the finding's own text, not on the code. A rule that
+        is skipped prints its code too ("E107  emit declares no triangle
+        budget"), so `assertIn("E107", report)` passes whether the budget got
+        through or was dropped -- dropping it was checked and that is exactly
+        what it did.
+        """
+        from lathe.mcp import server
+        src = LATHE_TABLE.replace("tris_lod0: 100", "tris_lod0: 4")
+        commit = server.WS.apply(src, "tight", branch="lathe_budget_test")[0]
+        self.assertEqual(commit.spec["budget"], {"tris_lod0": 4})
+        report = server._check(commit.id)
+        self.assertIn("over budget 4", report)
+        self.assertNotIn("declares no triangle budget", report)
+
+    def test_uv_declared_in_lathe_reaches_the_uv_rules(self):
+        from lathe.mcp import server
+        src = ('let s = box(400mm, 400mm, 50mm)\n'
+               'uv s by angle_seams(resolution = 1024, texel_density = 10.24)\n'
+               'emit "SM_LatheUv_Test_LOD0" {\n'
+               '  profile: game_prop_pbr\n  components: 1\n'
+               '  texel_density: 10.24\n  texture_resolution: 1024\n}\n')
+        commit, solid, _d, _n = server.WS.apply(
+            src, "lathe uv", branch="lathe_uv_test")
+        self.assertTrue(solid.has_uv, "the uv statement did not stick")
+        self.assertNotIn("no uv set at all", server._check(commit.id))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

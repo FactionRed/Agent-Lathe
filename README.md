@@ -110,9 +110,11 @@ Stated plainly, because the gap decides whether this is useful to you.
 - **No component library**, so §9's `library()` tool is omitted rather than stubbed.
 - **The DSL covers authoring, not everything.** `.lathe` has no loops and no user functions,
   so procedural work still goes through the Python escape hatch — where a bare `600` is once
-  again a silent bug. The two paths differ in safety too: the DSL interpreter is an AST walker
-  with no builtins in scope, while the Python path runs `exec` in a restricted namespace that
-  is explicitly not a sandbox.
+  again a silent bug. `lathe_apply` takes either and picks by the first statement, so the
+  typed path is reachable by an agent instead of being a library nobody calls. The two
+  paths differ in safety too: the DSL interpreter is an AST walker with no builtins in scope,
+  while the Python path runs `exec` in a restricted namespace that is explicitly not a
+  sandbox.
 - **No animation-grade topology, so articulation is rigid only.** Joints, FK and IK exist
   and parts move rigidly, which covers hinges, linkages and posable kit pieces. Skinning does
   not, and cannot yet: procedural geometry has no edge flow, the villager is a stylized figure

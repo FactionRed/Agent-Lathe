@@ -10,6 +10,11 @@ Commits are content-addressed on (parent, program). Re-sending the program that
 produced the current tip is a no-op, checked against the tip's text directly --
 the hash alone cannot catch it, because after a commit the tip is its own parent
 and the same program addresses differently.
+
+A program is Python or `.lathe`. Python runs with the build API in scope; `.lathe`
+is parsed and walked by lathe.lang, which is the only path where `600` is a type
+error rather than a 600-metre crate. Both end in a Solid and a spec dict, so
+everything downstream -- check, query, compare, export -- is language-blind.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .. import build as B
-from ..build.solid import LatheError, Solid
+from ..build.solid import CardinalityError, LatheError, Solid
 
 
 class ProgramError(LatheError):
@@ -46,11 +52,66 @@ class Commit:
     tags: Tuple[str, ...]
     spec: Dict[str, Any]
     created: float
+    language: str = "python"
 
     def short(self) -> str:
         return "%s  %-28s %6d tris  %d comp  %s" % (
             self.id, self.solid_name[:28], self.n_tris, self.n_components,
             self.message or "-")
+
+
+LANGUAGES = ("auto", "python", "lathe")
+
+# What a `.lathe` program's first statement looks like. Every alternative is two
+# adjacent words (or a keyword and a string or brace), which is not valid Python,
+# so a match is conclusive. A bare `uv = ...` or `mat = ...` is a Python
+# assignment and does not match.
+_LATHE_OPENER = re.compile(
+    r'^(?:(?:param|let|unit|scene|mat|uv|joint|bind)\s+[A-Za-z_]\w*'
+    r'|emit\s+"|solve\s*\{)')
+
+
+def detect_language(program: str) -> str:
+    """'lathe' if the first statement can only be .lathe, else 'python'."""
+    for raw in program.splitlines():
+        line = raw.strip().lstrip("\ufeff")
+        if not line or line.startswith("#"):
+            continue
+        return "lathe" if _LATHE_OPENER.match(line) else "python"
+    return "python"
+
+
+# `emit "NAME" { ... }` options that become the verifier's declared spec. Anything
+# else is refused rather than dropped: an option that is accepted and ignored is
+# a declaration the verifier never sees, which reads as a pass.
+_EMIT_SPEC_KEYS = ("profile", "target", "budget", "origin", "components",
+                   "texel_density", "texture_resolution")
+
+
+def spec_from_emit(options: Dict[str, Any]) -> Dict[str, Any]:
+    unknown = sorted(set(options) - set(_EMIT_SPEC_KEYS))
+    if unknown:
+        hint = ""
+        if "lod" in unknown:
+            hint = ("\n  `lod` is not accepted: nothing generates an LOD chain yet, "
+                    "and an LOD index belongs in the emitted name (_LOD0).")
+        raise ProgramError(
+            "emit option(s) not understood: %s\n  Accepted: %s.%s"
+            % (", ".join(unknown), ", ".join(_EMIT_SPEC_KEYS), hint))
+    spec: Dict[str, Any] = {}
+    for key, val in options.items():
+        if key == "budget":
+            if not isinstance(val, dict):
+                raise ProgramError("emit budget must be a map, e.g. "
+                                   "`budget: { tris_lod0: 1500 }`")
+            spec[key] = {k: int(v) for k, v in val.items()}
+        elif key in ("components", "texture_resolution"):
+            spec[key] = int(val)
+        elif key == "texel_density":
+            spec[key] = float(val)
+        else:
+            spec[key] = str(val)
+    return spec
 
 
 def _api_namespace() -> Dict[str, Any]:
@@ -126,7 +187,8 @@ class Workspace:
         cid = self.resolve(ref)
         if cid not in self._solids:
             # Pure programs mean this is always reproducible.
-            self._solids[cid] = self._run(self.commits[cid].program)[0]
+            c = self.commits[cid]
+            self._solids[cid] = self._run(c.program, c.language)[0]
         return self._solids[cid]
 
     def commit(self, ref: Optional[str] = None) -> Commit:
@@ -134,7 +196,33 @@ class Workspace:
 
     # -- apply -------------------------------------------------------------
 
-    def _run(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
+    def _run(self, program: str,
+             language: str = "python") -> Tuple[Solid, Dict[str, Any]]:
+        if language == "lathe":
+            return self._run_lathe(program)
+        return self._run_python(program)
+
+    def _run_lathe(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
+        """Parse and walk a .lathe program. No exec, no builtins, no imports."""
+        from ..lang import interp as L
+        from ..lang.syntax import LatheSyntaxError
+        from ..lang.values import UnitError
+        try:
+            solid, it = L.run(program)
+        except LatheSyntaxError as exc:
+            raise ProgramError(
+                "syntax error in the .lathe program\n  %s" % exc) from None
+        except (L.LatheRuntimeError, UnitError) as exc:
+            raise ProgramError("%s" % exc) from None
+        except LatheError:
+            raise
+        except Exception as exc:
+            raise ProgramError(
+                "%s while evaluating the .lathe program: %s"
+                % (type(exc).__name__, exc)) from None
+        return solid, spec_from_emit(it.emit_options)
+
+    def _run_python(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
         ns = _api_namespace()
         try:
             exec(compile(program, "<lathe program>", "exec"), ns)
@@ -170,8 +258,18 @@ class Workspace:
         return solid, spec
 
     def apply(self, program: str, message: str = "",
-              branch: Optional[str] = None) -> Tuple[Commit, Solid, str, bool]:
-        """Run a program and commit its result. Returns (commit, solid, diff, is_new)."""
+              branch: Optional[str] = None,
+              language: str = "auto") -> Tuple[Commit, Solid, str, bool]:
+        """Run a program and commit its result. Returns (commit, solid, diff, is_new).
+
+        `language` is "python", "lathe", or "auto", which reads the first
+        statement (see detect_language). It is resolved before the branch is
+        touched, so a bad value never leaves a half-made branch behind.
+        """
+        if language not in LANGUAGES:
+            raise LatheError("language must be one of %s, got %r"
+                             % (", ".join(LANGUAGES), language))
+        lang = detect_language(program) if language == "auto" else language
         if branch is not None and branch not in self.branches:
             self.branches[branch] = self.tip()
             self.head = branch
@@ -183,15 +281,19 @@ class Workspace:
         # it must not create a commit. Addressing on (parent, program) alone does
         # not catch this: once the program is applied, the tip *is* its own parent,
         # so the identical text hashes to a different address next time.
-        if parent is not None and self.commits[parent].program == program:
+        if (parent is not None and self.commits[parent].program == program
+                and self.commits[parent].language == lang):
             return self.commits[parent], self.solid(parent), "", False
 
+        # Python ids keep their pre-.lathe addresses; only the new language is
+        # salted, so identical text read as a different language is a new commit.
+        salt = "" if lang == "python" else lang + "\x00"
         cid = hashlib.sha256(
-            ((parent or "") + "\x00" + program).encode("utf-8")).hexdigest()[:10]
+            ((parent or "") + "\x00" + salt + program).encode("utf-8")).hexdigest()[:10]
         if cid in self.commits:
             return self.commits[cid], self.solid(cid), "", False
 
-        solid, spec = self._run(program)
+        solid, spec = self._run(program, lang)
         msh = solid.mesh()
         geom = hashlib.sha256(
             msh.verts.tobytes() + msh.tris.tobytes()).hexdigest()[:12]
@@ -201,7 +303,7 @@ class Workspace:
             message=message, solid_name=solid.name, n_tris=solid.n_tris,
             n_components=solid.components(), volume=solid.volume(),
             geom_hash=geom, tags=tuple(sorted(set(solid.tags.values()))),
-            spec=dict(spec), created=time.time(),
+            spec=dict(spec), created=time.time(), language=lang,
         )
         self.commits[cid] = c
         self._solids[cid] = solid

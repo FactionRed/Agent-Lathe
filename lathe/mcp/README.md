@@ -196,22 +196,44 @@ addresses differently. The first version of this got it wrong and a test caught 
 
 ## Security
 
-`lathe_apply` runs the program through `exec` in a namespace preloaded with the
-Lathe API. **That is a restricted namespace, not a sandbox.** Builtins are present,
+`lathe_apply` runs a **Python** program through `exec` in a namespace preloaded with
+the Lathe API. **That is a restricted namespace, not a sandbox.** Builtins are present,
 so a program that wants to reach the filesystem can.
+
+A `.lathe` program is different in kind: it is parsed and walked, never executed. There
+is no attribute access into host objects, no imports and no builtins in scope, so it is
+inert text. If this server ever has to accept programs from somewhere less trusted than
+the operator's own keyboard, that is the path that can be allowed and the Python one is
+not. Nothing enforces that split yet: `language: auto` still accepts either.
 
 The threat model is that the caller could already run Python — which on a local
 stdio server it can. Do not expose this over a network transport, and do not point
 it at programs from untrusted sources.
 
-## Still not the DSL
+## Two languages
 
-Programs are Python against the `lathe.build` API, not the `.lathe` language in §4.
-So an agent writes `assert_count(rim, 96)`, not `assert count(rim) == 96`, and
-`mm(35)` rather than `35mm`. §14.3 keeps the question open and leans bespoke with an
-`escape { python … }` block. This surface is that escape hatch, promoted to the only
-mode.
+`lathe_apply` takes `.lathe` or Python. `language: auto` (the default) reads the first
+statement: `param`, `let`, `unit`, `scene`, `mat`, `uv`, `joint` or `bind` followed by a
+name, `emit "…"`, or `solve {` is `.lathe`, because none of those can start a Python
+program. Anything else is Python. Pass `language: lathe` or `python` to override; a
+program forced through the wrong parser fails with that parser's error rather than
+falling back.
 
-What that costs: no unit types in the build layer, so a bare `600` is a silent
-metres-versus-millimetres bug rather than a compile error. The perception layer does
-enforce units, which is why `raycast` needs one and `box` does not.
+`.lathe` is where `600` is a type error, so use it unless the program needs a loop or a
+function. Its `emit "NAME" { … }` block is the verifier's declared spec, and it accepts
+`profile`, `target`, `budget`, `origin`, `components`, `texel_density` and
+`texture_resolution`. **Any other key is refused**, not ignored: an option that is
+accepted and dropped is a declaration the verifier never sees, and that reads as a pass.
+`lod` is refused by name, because nothing generates an LOD chain.
+
+What the two paths still do not share:
+
+- **No loops or functions in `.lathe`.** Procedural work stays in Python, where a bare
+  `600` is again a silent metres-versus-millimetres bug rather than a compile error.
+- **No `import_glb` in `.lathe`.** Reading a file breaks purity (§9) and the language has
+  no way to say it yet. Use the `lathe_import` tool.
+- **Joints and poses do not surface.** A rigged `.lathe` program builds, and the solid is
+  the posed one, but this surface has no tool to read or set the pose.
+
+Every commit records its language, and replay uses it, so a `.lathe` commit checks out
+as `.lathe` whatever `auto` would guess from the text.
