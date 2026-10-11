@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # The project is developed on Windows and its console handling has
+      # already had a Windows-only bug (ASCII folding), so both are covered.
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      # No Blender on the runner. Every Blender-gated test skips by itself, and
+      # the README names which ones. What runs here is everything that does not
+      # need it, including the stdio wire test that spawns the real server.
+      - name: Test
+        run: python -m pytest -q
+      # The three test assets, built and gated by the verifier. Exits non-zero
+      # if any asset reports an error, so a rule change that breaks a shipped
+      # asset fails here rather than at the next demo.
+      - name: Build and verify the test assets
+        run: python models/build_all.py --no-render

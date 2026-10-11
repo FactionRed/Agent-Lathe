@@ -3,11 +3,16 @@ Talk to the server the way a client actually does: spawn it, speak MCP over
 stdio, and drive a real session.
 
 Everything else tests the Python functions. This tests the *server* -- that it
-starts, advertises ten tools with usable schemas, and returns content over the
+starts, advertises twelve tools with usable schemas, and returns content over the
 wire. A surface that works when imported and fails when spawned is not a surface.
 
     python lathe/mcp/tests/test_stdio.py            # no Blender needed
     python lathe/mcp/tests/test_stdio.py --render    # includes lathe_observe
+    python -m pytest lathe/mcp/tests/test_stdio.py   # same checks, no --render
+
+Importing this module must not run the checks. pytest imports every test file
+to collect it, and a module-level sys.exit() killed collection of the whole
+tree with INTERNALERROR, so `pytest lathe` reported "no tests ran".
 """
 
 import asyncio
@@ -271,4 +276,14 @@ async def main():
     return 1 if FAIL else 0
 
 
-sys.exit(asyncio.run(main()))
+
+def test_server_over_stdio():
+    """The wire checks above, as one pytest case; failures name every label."""
+    PASS.clear()
+    FAIL.clear()
+    code = asyncio.run(main())
+    assert code == 0 and not FAIL, "wire checks failed: %s" % FAIL
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

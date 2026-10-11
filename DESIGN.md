@@ -441,6 +441,8 @@ rich language does not.
 | `library(query)` | parametric component search (§11) |
 | `export(target, path)` | file + final gate report |
 | `import(path)` | *added in build* — read a .glb/.gltf, report and validate it |
+| `view(path?)` | *added in build* — write the self-contained interactive preview (§6 Tier 3b) |
+| `setup()` | *added in build* — audit the install, build a seeded welcome piece as editable program text |
 
 `apply` returning the validation report inline is important: the agent sees consequences
 in the same turn it makes the change, rather than needing to remember to look.
