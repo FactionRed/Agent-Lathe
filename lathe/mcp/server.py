@@ -1094,6 +1094,14 @@ async def lathe_setup(params: SetupInput) -> str:
             "welcome piece (%s, seed %s)" % (w["style"], w["seed_label"]),
             branch="welcome")
     except Exception as exc:
+        if not a.get("blender_ok", True):
+            return "\n".join(out + [
+                "", "the welcome piece needs Blender, which was not found:", "",
+                _fail(exc), "",
+                "Install Blender 5.2 and put it on PATH, or set LATHE_BLENDER to "
+                "blender.exe,", "then call lathe_setup again. Everything that "
+                "does not bevel works without it,", "so lathe_apply is still "
+                "available for programs that avoid bevel()."])
         return "\n".join(out + ["", "the welcome program failed to build:", "",
                                 _fail(exc), "",
                                 "This is a bug in the generator, not in your "

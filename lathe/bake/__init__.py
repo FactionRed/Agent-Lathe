@@ -66,15 +66,18 @@ def bake(low: Solid, high: Solid, out_dir: str, stem: Optional[str] = None,
     ray = diag * 0.05 if max_ray_distance is None else max_ray_distance
     margin = (PADDING_TABLE.get(resolution, 4) if margin_px is None else margin_px)
 
-    exe = blender_path()
-    if exe is None:
-        raise LatheError("baking needs Blender. Set LATHE_BLENDER or put it on PATH.")
-
+    # Arguments first, environment second. A misspelt target is the caller's
+    # mistake whether or not Blender is installed, and answering "baking needs
+    # Blender" to it sends them to install something that would not have helped.
     unknown = [t for t in targets if t not in ("normal", "ao", "curvature")]
     if unknown:
         raise LatheError(
             "unknown bake target(s) %s. Available: normal, ao, curvature."
             % ", ".join(unknown))
+
+    exe = blender_path()
+    if exe is None:
+        raise LatheError("baking needs Blender. Set LATHE_BLENDER or put it on PATH.")
 
     os.makedirs(out_dir, exist_ok=True)
     stem = stem or low.name

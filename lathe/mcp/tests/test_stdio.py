@@ -24,6 +24,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, REPO)
 
+from lathe.build.bevel import blender_path  # noqa: E402
 from mcp import ClientSession, StdioServerParameters  # noqa: E402
 from mcp.client.stdio import stdio_client  # noqa: E402
 
@@ -103,11 +104,21 @@ async def main():
             r = await s.call_tool("lathe_setup", {"params": {
                 "seed": 20260728, "style": "lantern", "check_upstream": False}})
             body = text_of(r)
-            check("lathe_setup reports READY", "READY" in body)
-            check("lathe_setup builds a welcome piece", "welcome piece" in body)
-            check("lathe_setup hands back program text",
-                  "result = piece" in body or "result = pot" in body)
-            check("lathe_setup honours a forced style", "'lantern'" in body)
+            if blender_path() is not None:
+                check("lathe_setup reports READY", "READY" in body)
+                check("lathe_setup builds a welcome piece", "welcome piece" in body)
+                check("lathe_setup hands back program text",
+                      "result = piece" in body or "result = pot" in body)
+                check("lathe_setup honours a forced style", "'lantern'" in body)
+            else:
+                # Every style bevels, so without Blender there is no piece to
+                # build. What matters is that it says *why*: it used to answer
+                # "a bug in the generator, not in your environment".
+                check("lathe_setup names the missing Blender",
+                      "needs Blender" in body and "not found" in body,
+                      body[-200:].replace("\n", " "))
+                check("lathe_setup does not blame the generator",
+                      "bug in the generator" not in body)
 
             # -- apply ----------------------------------------------------
             r = await s.call_tool("lathe_apply", {"params": {

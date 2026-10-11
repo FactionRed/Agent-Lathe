@@ -34,11 +34,20 @@ def _pair():
     return low, high
 
 
+def _unbevelled_pair():
+    """Two valid solids and nothing else. The guards below refuse on their
+    arguments, so the high mesh only has to exist; building it with bevel() made
+    these tests need the Blender they claim not to."""
+    low = B.box(0.30, 0.20, 0.05, tag="body", name="SM_Slab_Oak_LOD0")
+    high = B.box(0.30, 0.20, 0.05, tag="body", name="SM_Slab_Oak_High")
+    return low, high
+
+
 class TestGuards(unittest.TestCase):
     """These need no Blender: they refuse before spawning anything."""
 
     def test_low_without_uv_is_refused(self):
-        low, high = _pair()
+        low, high = _unbevelled_pair()
         with self.assertRaises(LatheError) as ctx:
             bake(low, high, tempfile.gettempdir())
         msg = str(ctx.exception)
@@ -46,7 +55,7 @@ class TestGuards(unittest.TestCase):
         self.assertIn("unwrap", msg)
 
     def test_unknown_target_is_named_with_the_alternatives(self):
-        low, high = _pair()
+        low, high = _unbevelled_pair()
         low = B.unwrap(low, resolution=256)
         with self.assertRaises(LatheError) as ctx:
             bake(low, high, tempfile.gettempdir(), targets=("gloss",))
