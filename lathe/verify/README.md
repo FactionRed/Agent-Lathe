@@ -1,12 +1,12 @@
 # Verification subsystem — DESIGN.md section 7
 
-**Status:** working. 19 rules, 5 profiles, 120 tests, 29 fixtures. Headless.
+**Status:** working. 19 rules, 5 profiles, 125 tests, 31 fixtures. Headless.
 
 > Convert taste into assertions. An agent cannot have judgment, but it can
 > satisfy a spec. — [DESIGN.md](../../DESIGN.md) §7
 
 ```bash
-python lathe/verify/tests/run.py            # 120 tests, ~6 s
+python lathe/verify/tests/run.py            # 125 tests, ~6 s
 python -m lathe.verify                      # every fixture, one report each
 python -m lathe.verify severed_crate        # one asset
 python -m lathe.verify --json clean_prop    # the machine form
@@ -260,7 +260,7 @@ UVs, an object transform, and named face groups. They never touch `bpy`.
   would hide the most valuable subsystem behind the global state §1 indicts. It
   would also make `check()` cost an interpreter start.
 - A rule over plain arrays takes hand-built broken fixtures. A rule over `bmesh`
-  needs Blender to run its own unit test. This suite runs 92 tests in 5 s.
+  needs Blender to run its own unit test. This suite runs 125 tests in 5 s.
 
 Blender stays a supported *source*. `from_bpy_mesh` is 40 lines, and it maps
 material slots to face groups. [`blender_smoke.py`](tests/blender_smoke.py) runs
@@ -279,14 +279,14 @@ probes, and it could not host E102. See proposed change 8.
 |---|---|---|
 | `engine.py` | 299 | registry, `Profile`, `RuleContext`, `run()`. Knows no rule names |
 | `findings.py` | 379 | `Severity`, `Repair`, `Finding`, `Report`, text and JSON rendering |
-| `mesh.py` | 393 | `AssetMesh`, `EmitSpec`, `Transform`, Manifold and bpy adapters |
-| `topology.py` | 244 | edge maps, manifoldness, bowties, components, degeneracy |
+| `mesh.py` | 574 | `AssetMesh`, `EmitSpec`, `Transform`, Manifold and bpy adapters |
+| `topology.py` | 296 | position weld, edge maps, manifoldness, bowties, components, degeneracy |
 | `uvmap.py` | 183 | UV islands, island naming, per-island area and texel density |
 | `geom.py` | 144 | polygon area, Newell normals, convex clip, segment distance |
 | `profiles.py` | 311 | the five §7 profiles. Data only |
-| `rules/*.py` | 2140 | the 19 rules, grouped by what they read |
-| `fixtures.py` | 728 | 29 assets: 6 clean, 23 broken, one per failure mode |
-| `tests/*.py` | 1899 | 120 tests plus the Blender bridge script |
+| `rules/*.py` | 2163 | the 19 rules, grouped by what they read |
+| `fixtures.py` | 807 | 31 assets: 7 clean, 24 broken, one per failure mode |
+| `tests/*.py` | 1531 | 125 tests plus the Blender bridge script |
 
 A new rule is a decorated function. A new profile is a tuple of codes. Neither
 touches `engine.py`. `test_engine.py` proves it: the test file defines a profile
@@ -306,6 +306,8 @@ train the agent to ignore findings.
 | `fixed_crate` | *none* | the §4 crate with the prototype's cutter fix |
 | `nonmanifold_edge` | E101 | two boxes welded along one edge: 4 faces on it, nothing else open |
 | `bowtie_vertex` | E101 | two boxes welded at one corner: every edge manifold, one vertex two fans |
+| `bowtie_vertex_split` | E101 | the same two boxes as separate vertex sets that only coincide at the corner: index topology sees nothing, the position weld finds the pinch |
+| `flat_shaded_prism` | *none* | a closed prism as a flat-shaded export delivers it: every face on its own vertex copies, cap triangles sharing copies in two interleaved groups |
 | `open_shell` | E101 | top face deleted |
 | `ngon_prism` | E102 | closed hexagonal prism, n-gon caps |
 | `flipped_face` | E103 | one face reversed |
@@ -360,10 +362,23 @@ plainly:
 - **E106** fans n-gon UVs into triangles before the clip. That is exact for
   convex polygons and approximate for concave ones. The `min_overlap_fraction`
   threshold hides a sliver overlap under 0.5% of the smaller island.
-- **E108** counts vertex-connected components. Two shells welded at one vertex
-  count as one. The `bowtie_vertex` fixture is that case, and E101 reports it
-  instead. Manifold's severed output has separate vertex sets, so the crate case
-  still works.
+- **Connectivity is measured on positions, not on vertex indices.** `Topology`
+  welds vertices within `EmitSpec.weld_tolerance` (1e-6 mesh units) before it
+  counts anything. It has to. A flat-shaded export splits every corner per
+  (position, normal), and on a planar cap the per-face normals differ only in
+  float noise, so coplanar triangles land on arbitrary copies of one point. Read
+  by index that mesh is a pile of open pieces whose cap triangles pinch at a
+  shared copy. E101 reported bowties on ten objects of a real vehicle that
+  Blender's own manifold check called clean, both before export and after. The
+  same split hides a real pinch between two shells that never shared an index.
+  `flat_shaded_prism` and `bowtie_vertex_split` are the two cases, and the
+  suite asserts the index-only reading of each as well, so the fixtures are
+  proven to exercise the failure. `weld_tolerance = 0` on the spec reads by
+  index, for a card profile that keeps coincident double-sided faces apart.
+- **E108** counts position-connected components. Two shells touching at one
+  vertex count as one. The `bowtie_vertex` fixture is that case, and E101
+  reports it instead. Manifold's severed output has separate positions, so the
+  crate case still works.
 - **E105**'s `min_face_area` is absolute in m², not relative to asset scale. A
   1 km asset has legitimately small faces. A profile for one should raise the
   threshold.

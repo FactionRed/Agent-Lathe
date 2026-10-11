@@ -5,22 +5,53 @@ Split from mesh.py because the representation and the analysis of it are
 different jobs, and because every topology rule (E101, E103, E105, E108) reads
 exactly this object. It is computed once per asset and cached on the rule
 context (see engine.RuleContext.topology).
+
+CONNECTIVITY IS A PROPERTY OF POSITIONS, NOT OF VERTEX INDICES. Every question
+here -- how many shells, which edges are open, where two fans pinch -- is asked
+of the surface, and the surface does not know how an exporter numbered its
+corners. So faces are rewritten onto one canonical vertex per position before
+anything is counted (`canonical_vertices`), at a tolerance the asset declares
+(`EmitSpec.weld_tolerance`). Read by index instead, a flat-shaded glTF export
+is a pile of open pieces with pinched vertices, and a real pinch between two
+shells that never shared an index is invisible. Both happened.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
 from .geom import EdgeKey, edge_key
-from .mesh import AssetMesh
+from .mesh import AssetMesh, Face
+
+# Metres. Bit-identical duplicates, which is what a vertex split produces,
+# always land in the same cell; two points that round to the same cell weld
+# as well. Well under any feature size a game asset carries.
+WELD_TOLERANCE = 1e-6
+
+
+def canonical_vertices(verts: np.ndarray, tolerance: Optional[float]) -> np.ndarray:
+    """Map every vertex index to the first vertex at the same position.
+
+    Positions are binned on a grid of `tolerance`. None or 0 is the identity
+    map: index connectivity, exactly as the mesh arrived.
+    """
+    n = int(verts.shape[0])
+    canon = np.arange(n, dtype=np.int64)
+    if not tolerance or n == 0:
+        return canon
+    cells = np.round(np.asarray(verts, dtype=np.float64) / float(tolerance)).astype(np.int64)
+    first: Dict[Tuple[int, int, int], int] = {}
+    for i, key in enumerate(map(tuple, cells.tolist())):
+        canon[i] = first.setdefault(key, i)
+    return canon
 
 
 @dataclass(frozen=True)
 class Component:
-    """One vertex-connected shell. E108 counts these."""
+    """One position-connected shell. E108 counts these."""
 
     index: int
     faces: Tuple[int, ...]
@@ -48,14 +79,30 @@ class Topology:
     is a real limitation and is recorded in the README rather than hidden.
     """
 
-    def __init__(self, mesh: AssetMesh) -> None:
+    def __init__(self, mesh: AssetMesh, weld: Optional[float] = WELD_TOLERANCE) -> None:
         self.mesh = mesh
+        self.weld = weld
+        # Faces on canonical vertices: one index per position. Every index
+        # this class hands out (bowtie verts, edge keys, component verts) is a
+        # canonical one, and always a valid index into `mesh.verts`.
+        self.canonical: np.ndarray = canonical_vertices(mesh.verts, weld)
+        self.duplicate_verts: int = int(
+            np.count_nonzero(self.canonical != np.arange(mesh.num_verts, dtype=np.int64))
+        )
+        canon = self.canonical
+        self.faces: Tuple[Face, ...] = tuple(
+            tuple(int(canon[i]) for i in f) for f in mesh.faces
+        )
+
         self.edge_faces: Dict[EdgeKey, List[int]] = {}
         self.directed: Dict[EdgeKey, List[int]] = {}
         self.vert_faces: List[List[int]] = [[] for _ in range(mesh.num_verts)]
-        self.self_edge_faces: List[int] = []  # a face using one vertex twice in a row
+        # A face using one vertex twice in a row. After the weld this also
+        # catches a face whose two corners sit on one point, which is a
+        # zero-length edge and belongs to E105 as much as an index repeat does.
+        self.self_edge_faces: List[int] = []
 
-        for fi, f in enumerate(mesh.faces):
+        for fi, f in enumerate(self.faces):
             n = len(f)
             for j in range(n):
                 a, b = f[j], f[(j + 1) % n]
@@ -79,13 +126,17 @@ class Topology:
         self.bowtie_verts: Tuple[int, ...] = tuple(self._find_bowties())
         self.components: Tuple[Component, ...] = tuple(self._components())
 
+        # Loose verts are judged on the ORIGINAL indices. A duplicate that a
+        # face references is used, not loose, even though no canonical face
+        # names it any more.
         used = {i for f in mesh.faces for i in f}
         wired = {i for e in mesh.wire_edges for i in e}
         self.loose_verts: Tuple[int, ...] = tuple(
             i for i in range(mesh.num_verts) if i not in used and i not in wired
         )
         self.loose_wire_edges: Tuple[EdgeKey, ...] = tuple(
-            e for e in mesh.wire_edges if edge_key(*e) not in self.edge_faces
+            e for e in mesh.wire_edges
+            if edge_key(int(canon[e[0]]), int(canon[e[1]])) not in self.edge_faces
         )
 
     # -- predicates --------------------------------------------------------
@@ -137,7 +188,7 @@ class Topology:
     def edges_at(self, v: int) -> Iterable[Tuple[EdgeKey, List[int]]]:
         seen = set()
         for fi in self.vert_faces[v]:
-            f = self.mesh.faces[fi]
+            f = self.faces[fi]
             n = len(f)
             for j, a in enumerate(f):
                 b = f[(j + 1) % n]
@@ -164,14 +215,15 @@ class Topology:
             if ra != rb:
                 parent[ra] = rb
 
-        for f in mesh.faces:
+        canon = self.canonical
+        for f in self.faces:
             for j in range(len(f)):
                 union(f[j], f[(j + 1) % len(f)])
         for a, b in mesh.wire_edges:
-            union(a, b)
+            union(int(canon[a]), int(canon[b]))
 
         groups: Dict[int, List[int]] = {}
-        for fi, f in enumerate(mesh.faces):
+        for fi, f in enumerate(self.faces):
             groups.setdefault(find(f[0]), []).append(fi)
 
         wv = mesh.world_verts()
@@ -180,18 +232,18 @@ class Topology:
         keys = sorted(groups, key=lambda r: (-len(groups[r]), min(groups[r])))
         for idx, root in enumerate(keys):
             faces = tuple(groups[root])
-            vset = sorted({i for fi in faces for i in mesh.faces[fi]})
+            vset = sorted({i for fi in faces for i in self.faces[fi]})
             edges = {
-                edge_key(mesh.faces[fi][j], mesh.faces[fi][(j + 1) % len(mesh.faces[fi])])
+                edge_key(self.faces[fi][j], self.faces[fi][(j + 1) % len(self.faces[fi])])
                 for fi in faces
-                for j in range(len(mesh.faces[fi]))
-                if mesh.faces[fi][j] != mesh.faces[fi][(j + 1) % len(mesh.faces[fi])]
+                for j in range(len(self.faces[fi]))
+                if self.faces[fi][j] != self.faces[fi][(j + 1) % len(self.faces[fi])]
             }
             closed = all(len(self.edge_faces[e]) == 2 for e in edges)
             consistent = not any(self._is_inconsistent(e) for e in edges)
             vol = 0.0
             for fi in faces:
-                poly = wv[list(mesh.faces[fi])]
+                poly = wv[list(self.faces[fi])]
                 for t in range(1, len(poly) - 1):
                     a, b, c = poly[0], poly[t], poly[t + 1]
                     vol += float(np.dot(a, np.cross(b, c))) / 6.0
