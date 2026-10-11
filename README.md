@@ -97,9 +97,9 @@ reasons rather than prompt-quality ones.
   [lathe/mcp/](lathe/mcp/README.md).
 - `lathe_setup` audits the install and builds a **seeded welcome piece** — four styles,
   eight palettes, different for every user, handed back as editable program text.
-- 590 tests. Checked against closed-form truth, not smoke. 561 pass without Blender
-  installed; every one of the remaining 29 is gated on the bevel and needs Blender 5.2 on
-  `PATH`.
+- Tests are checked against closed-form truth, not smoke. Every test that needs Blender
+  skips by name when Blender is absent. CI runs the suite on Linux and Windows without
+  Blender, so the Blender-gated tests run locally only.
 
 ## What is missing
 
@@ -127,16 +127,18 @@ agent can drive this end to end.
 
 ## Quick start
 
-Needs Python 3.12, `manifold3d`, `numpy`, `Pillow`, and Blender 5.2 for bevel and rendering.
+Needs Python 3.12 and, for bevel and rendering, Blender 5.2. Everything else installs from
+`pyproject.toml`: `manifold3d`, `numpy`, `Pillow`, `xatlas` and the `mcp` SDK (below 2.0).
 
 ```bash
-pip install manifold3d numpy pillow
+pip install -e ".[dev]"
+python -m pytest -q                      # the whole suite, from the repo root
 python models/build_all.py               # build, verify, probe and render all three
 python models/build_all.py --no-render   # skip Blender, keep the checks
-python -m pytest lathe/verify/tests -q   # 106 tests
-python -m pytest lathe/perceive/tests -q # 172 tests
-python -m pytest lathe/pose/tests -q     # 45 tests
+lathe-mcp                                # the MCP server, over stdio
 ```
+
+One package at a time works too: `python -m pytest lathe/verify/tests -q`.
 
 Set `LATHE_BLENDER` if Blender is not on `PATH`.
 

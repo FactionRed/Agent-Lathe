@@ -9,8 +9,13 @@ logical face counts are tessellation-dependent on curved surfaces (5.3).
 
 import unittest
 
+from lathe.build.bevel import blender_path
 from lathe.mcp import welcome
 from lathe.mcp.session import Workspace
+
+
+needs_blender = unittest.skipUnless(
+    blender_path() is not None, "this style bevels, and bevel needs Blender")
 
 
 class TestVariation(unittest.TestCase):
@@ -45,6 +50,7 @@ class TestVariation(unittest.TestCase):
         w = welcome.generate(99)
         self.assertIn(w["seed_label"], w["program"])
 
+    @needs_blender
     def test_materials_cover_every_tag_the_program_uses(self):
         for s in range(24):
             w = welcome.generate(s)
@@ -73,6 +79,7 @@ class TestEveryStyleBuilds(unittest.TestCase):
         self.assertGreater(hi[2] - lo[2], 0.05, "suspiciously flat")
         return solid
 
+    @needs_blender
     def test_stool(self):
         for seed in (2, 6, 19):
             self._build("stool", seed)
@@ -81,10 +88,12 @@ class TestEveryStyleBuilds(unittest.TestCase):
         for seed in (79, 100, 3):
             self._build("planter", seed)
 
+    @needs_blender
     def test_lantern(self):
         for seed in (35, 5, 23):
             self._build("lantern", seed)
 
+    @needs_blender
     def test_pedestal(self):
         for seed in (0, 9, 11):
             self._build("pedestal", seed)

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lathe"
+version = "0.0.0"
+description = "An agent-native 3D asset authoring system: the agent writes a program, the system returns a verified asset."
+readme = "README.md"
+requires-python = ">=3.12"
+# Floors are the versions the suite last passed on, not the oldest that work:
+# nothing here has been run against anything older. Loosen one only alongside a
+# CI job that proves it.
+dependencies = [
+    "numpy>=2.5",
+    "manifold3d>=3.5",
+    "pillow>=12.2",
+    "xatlas>=0.0.11",
+    # The MCP server (lathe.mcp.server) and its wire test. Capped below 2:
+    # mcp 2.x renamed FastMCP to MCPServer, so `from mcp.server.fastmcp import
+    # FastMCP` raises ModuleNotFoundError there. Lift the cap with the port.
+    "mcp>=1.28,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1"]
+
+[project.scripts]
+lathe-mcp = "lathe.mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["lathe*"]
+
+[tool.setuptools.package-data]
+# The viewer reads its page shell from disk; without this an installed wheel
+# builds a viewer that cannot open.
+"lathe.viewer" = ["shell.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["lathe"]

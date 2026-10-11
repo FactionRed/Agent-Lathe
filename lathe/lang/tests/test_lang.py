@@ -8,6 +8,7 @@ no reason to exist.
 
 import unittest
 
+from lathe.build.bevel import blender_path
 from lathe.lang import interp, syntax, values as V
 from lathe.lang.interp import LatheRuntimeError, run
 from lathe.lang.syntax import LatheSyntaxError, parse, tokenize
@@ -222,6 +223,8 @@ class TestInterpreterRejections(unittest.TestCase):
 
 
 class TestInterpreterBuilds(unittest.TestCase):
+    @unittest.skipUnless(blender_path() is not None,
+                         "the crate bevels, and bevel needs Blender")
     def test_the_design_doc_crate(self):
         solid, it = run(CRATE)
         self.assertTrue(solid.status_ok())
