@@ -23,14 +23,25 @@ MATERIALS = {
 
 
 def build(seat_h=0.45, seat_w=0.42, seat_d=0.40, leg=0.040, slat_n=3,
-          back_h=0.90, bevel_w=mm(2.0), bevel=True):
+          back_h=0.90, bevel_w=mm(2.0), bevel=True, stile_drop=None):
     """With bevel=False this is the low poly: same silhouette, flat arrises.
 
     That pair is what a bake needs. The bevel is the only difference between them,
     which is exactly the detail a normal map is for -- and carrying it in texture
     rather than geometry is what removes the chart slivers behind the W302 warning
     these assets used to report.
+
+    `stile_drop` is how far the stile tops stop short of the top rail's top, and
+    defaults to twice the bevel width. The top rail used to sit exactly flush with
+    the stile tops while overhanging them, which leaves one coplanar top face
+    split across two tags. bmesh answered a 2 mm bevel on that joint by shrinking
+    the whole chair's bevel to 0.99 mm -- its clamp is global -- and the result was
+    valid, correctly tagged and silent. A step has to be at least twice the bevel
+    width tall, or the bevels at its two edges collide. The overall height is the
+    rail's top and does not change.
     """
+    if stile_drop is None:
+        stile_drop = 2.0 * bevel_w
     # -- parameters as expressions, so one edit moves everything that depends
     seat_t = mm(35)
     inset = mm(28)
@@ -48,7 +59,7 @@ def build(seat_h=0.45, seat_w=0.42, seat_d=0.40, leg=0.040, slat_n=3,
         L.box(leg, leg, front_h, tag="leg").at(x=sx * lx, y=-ly, z=front_h / 2)
         for sx in (-1, 1)
     ]
-    stile_h = back_h
+    stile_h = back_h - stile_drop
     stiles = [
         L.box(leg, leg, stile_h, tag="stile").at(x=sx * lx, y=ly, z=stile_h / 2)
         for sx in (-1, 1)
@@ -104,9 +115,25 @@ def build(seat_h=0.45, seat_w=0.42, seat_d=0.40, leg=0.040, slat_n=3,
     # Bevel every sharp edge. Real timber has no zero-radius arris, and the
     # wrapper enforces the non-inheriting tag default, so the assertions above
     # still hold afterwards.
+    #
+    # clamp=False, and the check after it, are deliberate. With the default clamp
+    # a 2 mm request delivered 0.99 mm on all 204 edges, because bmesh sizes one
+    # width for the whole body from its worst joint, and this chair is boxes with
+    # every feature at least 4 mm, which an unclamped 2 mm bevel cannot fold over.
+    # The report is what makes that safe to assume rather than hope: if a later
+    # edit makes any edge come out short, this says so instead of shipping a
+    # half-width bevel under a 2 mm parameter.
     if bevel:
         chair = L.bevel(chair, width=bevel_w, segments=2, min_dihedral=55,
-                        min_length=mm(4))
+                        min_length=mm(4), clamp=False)
+        rep = chair.bevel_report
+        if rep is not None and rep.clamped:
+            raise L.LatheError(
+                "the chair's %.2f mm bevel came out short on %d of %d edges, "
+                "worst %.2f mm. A joint is closer than twice the bevel width: "
+                "check stile_drop (%.1f mm) and any part flush with another."
+                % (bevel_w * 1000, rep.short, rep.edges,
+                   rep.min_delivered * 1000, stile_drop * 1000))
     return chair
 
 

@@ -632,8 +632,8 @@ and do not sell character work in Phase 1–4.
 **Baking scales with how much of the mesh the detail was.** `lathe/bake/` moves a modelled
 bevel into a normal map, which is the production answer to the W302 spread above. It worked
 spectacularly on one asset and did nothing for another, and the difference is instructive: the
-chair's bevel was 87% of its triangles, so the low poly is 308 against 2,324 and the density
-spread falls from 418% off target to 17%. The bowl's bevel was 18%, so its low poly is 82% of
+chair's bevel was 87% of its triangles, so the low poly is 300 against 2,316 and the density
+spread falls from 140% off target to 24%. The bowl's bevel was 18%, so its low poly is 82% of
 the original and the warning is unchanged — because that asset's density problem was never the
 bevel. It is the pole triangles of its spheres and revolves.
 
@@ -818,7 +818,12 @@ system adoptable before it is trusted.
    anywhere overlaps, so a single thin feature shrinks every bevel on the model, and every
    edge reports the same shortfall (192 of 192 here). That also explains the
    non-monotonicity: the width is a minimum over the whole body, not a property of any edge.
-   The shipped chair was hit by it: its 2 mm bevel delivers 0.99 mm on all 204 edges.
+   The shipped chair was hit by it: its 2 mm bevel delivered 0.99 mm on all 204 edges, and
+   had for as long as it existed. The cause was one joint: the top rail flush with the stile
+   tops while overhanging them, a coplanar top face split across two tags. It is fixed in
+   `models/chair.py` — stile tops now stop 2× the bevel width short of the rail, and the
+   bevel is unclamped under a guard that raises if any edge comes out short. Every chair
+   figure in these docs was re-measured; the earlier ones described a half-width bevel.
 
    *Decision: report, do not flip the default.* `clamp=False` can fold the surface over
    itself on a genuinely too-large width, and no referee has a closed form for that, so
