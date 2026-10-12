@@ -138,6 +138,16 @@ class TestRefereeArithmetic(unittest.TestCase):
             (before - poly_area(fine)) / (w * w * (1 - math.pi / 4)), 2.0, places=3,
             msg="two corners are beveled; the other two sit on the axis")
 
+    def test_a_model_that_cannot_describe_the_bevel_is_refused(self):
+        """n = 12 facets are 30 degrees apart; at min_dihedral 25 bevel() rounds
+        them too and the 2D profile has no word for that. Graded anyway it read
+        384 triangles 'unmatched' and a volume off by 1.3e-3."""
+        prof = T.profile_from_revolve([(0, 0), (0.1, 0), (0.1, 0.2), (0, 0.2)], 12)
+        with self.assertRaises(ValueError) as ctx:
+            T.bevel_profile(prof, 0.005, 2, min_dihedral=25.0)
+        self.assertIn("facet edges", str(ctx.exception))
+        T.bevel_profile(prof, 0.005, 2, min_dihedral=40.0)      # fine
+
     def test_overlapping_bevels_are_refused_not_guessed(self):
         with self.assertRaises(ValueError):
             T.bevel_profile(T.profile_from_revolve(

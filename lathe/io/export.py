@@ -31,6 +31,55 @@ FORMATS = NATIVE + VIA_BLENDER
 _WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_export_worker.py")
 
 
+_WINDOWS_DEVICES = {"con", "prn", "aux", "nul"} | {"com%d" % i for i in range(1, 10)} \
+    | {"lpt%d" % i for i in range(1, 10)}
+
+
+def safe_destination(path: str, base: Optional[str] = None) -> str:
+    """The absolute path an export or preview may be written to, or a LatheError.
+
+    A relative path is resolved against `base` (the server's output directory),
+    not the process's working directory, which is wherever the client happened to
+    start it. Names Windows treats specially are refused: `NUL.obj` is the null
+    device and "succeeded" writing nothing, `a:b.obj` wrote an NTFS alternate
+    stream and then failed on the .mtl, and a trailing space or dot is silently
+    stripped by the filesystem so the file lands under another name.
+    """
+    if not isinstance(path, str) or not path.strip() or "\x00" in path:
+        raise LatheError("path must be a non-empty file path")
+    # Validate what the caller wrote, before the OS normalises it: abspath()
+    # (GetFullPathName) strips trailing spaces and dots and rewrites NUL to the
+    # device path, which is exactly what makes these names dangerous.
+    drive, rest = os.path.splitdrive(path)
+    if drive and not rest.startswith(("/", "\\")):
+        # "a:b.obj" is a path relative to drive A's working directory, or, on
+        # NTFS, a stream named "obj" on a file called "b" -- neither is a file.
+        raise LatheError(
+            "%r is relative to a drive's own working directory, or an NTFS "
+            "stream name; give a full path or a plain relative one." % path)
+    for part in [x for x in rest.replace("\\", "/").split("/") if x]:
+        stem = part.split(".")[0].rstrip(" ").lower()
+        if stem in _WINDOWS_DEVICES:
+            raise LatheError(
+                "%r is a reserved device name on Windows and would not be written "
+                "as a file. Choose another name." % part)
+        if any(c in part for c in '<>:"|?*') or any(ord(c) < 32 for c in part):
+            raise LatheError(
+                "%r contains a character a file name cannot (one of < > : \" | "
+                "? *). Choose another name." % part)
+        if part not in (".", "..") and part != part.rstrip(" ."):
+            raise LatheError(
+                "%r ends in a space or a dot, which the filesystem strips: the "
+                "file would land under a different name." % part)
+        if len(part) > 200:
+            raise LatheError("a path component is %d characters long; keep it "
+                             "under 200" % len(part))
+    p = path
+    if not os.path.isabs(p):
+        p = os.path.join(base or os.getcwd(), p)
+    return os.path.abspath(p)
+
+
 def export(solid: Solid, path: str, materials: Optional[Dict[str, str]] = None,
            origin: str = "as_built") -> dict:
     """Write `solid` to `path`. Format comes from the extension.

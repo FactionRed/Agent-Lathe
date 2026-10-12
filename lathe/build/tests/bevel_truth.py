@@ -39,6 +39,10 @@ class Profile:
 
     pts: Tuple[Tuple[float, float], ...]
     tags: Tuple[Optional[str], ...]
+    # Facets round the axis, when the profile came from a revolve. The 2D model
+    # bevels the profile's corners and nothing else, which is only the whole
+    # story while the facet edges themselves stay under the dihedral threshold.
+    n: Optional[int] = None
 
     def __post_init__(self):
         if len(self.pts) != len(self.tags):
@@ -64,7 +68,7 @@ def profile_from_revolve(points: Sequence[Tuple[float, float]], n: int,
     for i, (p, q) in enumerate(zip(pts, pts[1:] + pts[:1])):
         on_axis = abs(p[0]) < 1e-12 and abs(q[0]) < 1e-12
         tags.append(None if on_axis else tag)
-    return Profile(tuple(pts), tuple(tags))
+    return Profile(tuple(pts), tuple(tags), n)
 
 
 def stacked_cylinders(parts: Sequence[Tuple[float, float, str]], n: int) -> Profile:
@@ -96,7 +100,7 @@ def stacked_cylinders(parts: Sequence[Tuple[float, float, str]], n: int) -> Prof
     pts.append((0.0, z))
     tags.append(prev[1])                          # the top
     tags.append(None)                             # back down the axis
-    return Profile(tuple(pts), tuple(tags))
+    return Profile(tuple(pts), tuple(tags), n)
 
 
 # -- the bevel ----------------------------------------------------------------
@@ -138,6 +142,15 @@ def bevel_profile(profile: Profile, width: float, segments: int,
     edge -- the caller picks widths where that cannot happen, because what
     bmesh's clamp does there has no closed form.
     """
+    if profile.n is not None and 360.0 / profile.n >= min_dihedral:
+        # The vertical edges between facets are 360/n degrees apart. At or over
+        # the threshold bevel() rounds those too, in 3D, and a 2D profile cannot
+        # say what that does: n = 12 at min_dihedral 80 was off by 1.3e-3 in
+        # volume with 384 triangles "unmatched". Refuse rather than grade it.
+        raise ValueError(
+            "a %d-facet revolve has %.1f degree facet edges, which min_dihedral "
+            "%g also bevels; the 2D profile cannot model that. Use more facets "
+            "or a higher threshold." % (profile.n, 360.0 / profile.n, min_dihedral))
     pts = [np.array(p, dtype=np.float64) for p in profile.pts]
     n = len(pts)
     wanted = None if only_tags is None else set(only_tags)
