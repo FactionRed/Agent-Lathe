@@ -541,7 +541,17 @@ def raycast(mesh: Mesh, origin, direction, unit: str | None = None,
     d = np.array(as_direction(direction), dtype=np.float64)
     op = np.array(o.si, dtype=np.float64)
     diag = _diagonal(mesh)
-    limit = 4.0 * diag if max_distance is None else as_length(max_distance).si
+    # How far a ray can possibly have to go: from where it starts to the far
+    # corner of the bounding box. The limit used to be 4 x the mesh's diagonal
+    # measured from the origin, so a ray started 1.3 m from a 0.2 m cube found no
+    # surface ("miss, check the aim") and one started 1.1 m away reported the
+    # entry and lost the exit: "odd crossing count ... a hole" on a closed cube.
+    lo, hi = np.asarray(mesh.verts).min(axis=0), np.asarray(mesh.verts).max(axis=0)
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
+                        for z in (lo[2], hi[2])])
+    reach = float(np.linalg.norm(corners - op, axis=1).max()) * (1.0 + 1e-6)         + diag * 1e-3
+    limit = reach if max_distance is None else as_length(max_distance).si
+    truncated = limit < reach
     eps = max(diag, 1.0) * 1e-9
 
     ts, tris, front = _ray_hits(mesh, op, d, limit, eps)
@@ -616,7 +626,12 @@ def raycast(mesh: Mesh, origin, direction, unit: str | None = None,
             "E103 first hit is a back face -- the ray starts inside the solid, or "
             "that normal is inverted, or the front surface is missing"
         )
-    if len(ts) % 2 == 1:
+    if truncated:
+        problems.append(
+            "the search stopped at %s, before the far side of the mesh; the "
+            "crossing count may be incomplete" % Length(limit).format(report_unit)
+        )
+    elif len(ts) % 2 == 1:
         problems.append(
             "odd crossing count (%d) -- the surface is not closed along this ray "
             "(a hole), or the ray started inside it" % len(ts)
