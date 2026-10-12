@@ -15,6 +15,12 @@ A program is Python or `.lathe`. Python runs with the build API in scope; `.lath
 is parsed and walked by lathe.lang, which is the only path where `600` is a type
 error rather than a 600-metre crate. Both end in a Solid and a spec dict, so
 everything downstream -- check, query, compare, export -- is language-blind.
+
+A workspace is shared by every tool call, and lathe_apply runs programs on worker
+threads, so state changes under a lock and *only on success*: a program that fails
+leaves no branch, no moved head and no commit, and two programs running at once
+each land on the branch they were sent to. (Before that, a slow call on one branch
+overlapping a fast call on another lost both commits.)
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import difflib
 import hashlib
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -118,6 +125,47 @@ def spec_from_emit(options: Dict[str, Any]) -> Dict[str, Any]:
     return spec
 
 
+_BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$")
+
+
+def check_branch_name(name: str) -> str:
+    """Branch names are short, printable and cannot be read as a ref expression."""
+    if not isinstance(name, str) or not _BRANCH_NAME.match(name) or name == "HEAD":
+        raise LatheError(
+            "%r is not a usable branch name. Use 1-64 characters from letters, "
+            "digits, '.', '_', '-' and '/', starting with a letter or digit, and "
+            "not 'HEAD'." % (name,))
+    return name
+
+
+def _require_body(solid: Solid) -> None:
+    """A solid with no triangles or no volume is not an asset.
+
+    box(0mm, ...) and box(-5mm, ...) produced an empty Manifold that committed,
+    and then every later tool failed with "max() iterable argument is empty".
+    """
+    if solid.n_tris == 0 or not solid.volume() > 0.0:
+        raise ProgramError(
+            "the program's result is empty (%d triangles, volume %g). Zero or "
+            "negative dimensions, or a boolean that removed everything, are the "
+            "usual causes." % (solid.n_tris, solid.volume()))
+
+
+class ApplyResult(tuple):
+    """(commit, solid, diff, is_new), unpackable as that, plus where it landed.
+
+    `branch` is the branch the call committed on, which is not `commit.branch`
+    when the program already existed as a commit made somewhere else. `moved` is
+    true when no commit was made but the branch tip moved onto an existing one.
+    """
+
+    def __new__(cls, commit, solid, diff, is_new, branch, moved=False):
+        self = super().__new__(cls, (commit, solid, diff, is_new))
+        self.branch = branch
+        self.moved = moved
+        return self
+
+
 def _api_namespace() -> Dict[str, Any]:
     """What a program can see.
 
@@ -147,13 +195,25 @@ class Workspace:
         self.head: str = "main"
         self._solids: Dict[str, Solid] = {}
         self._order: List[str] = []
+        # Re-entrant: public methods call each other. Never held while a program
+        # runs, which takes seconds.
+        self._lock = threading.RLock()
 
     # -- refs --------------------------------------------------------------
 
     def tip(self, branch: Optional[str] = None) -> Optional[str]:
-        return self.branches[branch or self.head]
+        with self._lock:
+            name = branch or self.head
+            if name not in self.branches:
+                raise LatheError("unknown branch %r. Branches: %s."
+                                 % (name, ", ".join(sorted(self.branches))))
+            return self.branches[name]
 
     def resolve(self, ref: Optional[str]) -> str:
+        with self._lock:
+            return self._resolve(ref)
+
+    def _resolve(self, ref: Optional[str]) -> str:
         """Accepts a branch name, a commit id or prefix, HEAD, or HEAD~n."""
         if ref in (None, "", "HEAD"):
             cid = self.tip()
@@ -167,8 +227,15 @@ class Workspace:
                 raise LatheError("branch %r has no commits yet" % ref)
             return cid
         if ref.startswith("HEAD~"):
-            n = int(ref[5:] or 1)
-            cid = self.resolve("HEAD")
+            # HEAD~, HEAD~3, HEAD~1~1. Anything else (HEAD~abc, HEAD~-1) used to
+            # reach int() and either raise a bare ValueError or, for a negative,
+            # quietly mean HEAD.
+            if not re.fullmatch(r"HEAD(?:~\d*)+", ref):
+                raise LatheError(
+                    "%r is not a ref. HEAD~n goes back n commits (HEAD~, HEAD~2, "
+                    "HEAD~1~1); n is a whole number." % ref)
+            n = sum(int(t or 1) for t in re.findall(r"~(\d*)", ref))
+            cid = self._resolve("HEAD")
             for _ in range(n):
                 parent = self.commits[cid].parent
                 if parent is None:
@@ -188,15 +255,20 @@ class Workspace:
         raise LatheError("ref %r is ambiguous: %s" % (ref, ", ".join(hits)))
 
     def solid(self, ref: Optional[str] = None) -> Solid:
-        cid = self.resolve(ref)
-        if cid not in self._solids:
-            # Pure programs mean this is always reproducible.
+        with self._lock:
+            cid = self.resolve(ref)
+            hit = self._solids.get(cid)
             c = self.commits[cid]
-            self._solids[cid] = self._run(c.program, c.language)[0]
-        return self._solids[cid]
+        if hit is not None:
+            return hit
+        # Pure programs mean this is always reproducible. Run outside the lock.
+        built = self._run(c.program, c.language)[0]
+        with self._lock:
+            return self._solids.setdefault(cid, built)
 
     def commit(self, ref: Optional[str] = None) -> Commit:
-        return self.commits[self.resolve(ref)]
+        with self._lock:
+            return self.commits[self.resolve(ref)]
 
     # -- apply -------------------------------------------------------------
 
@@ -235,6 +307,7 @@ class Workspace:
             raise ProgramError(
                 "%s while evaluating the .lathe program: %s"
                 % (type(exc).__name__, exc)) from None
+        _require_body(solid)
         return solid, spec_from_emit(it.emit_options)
 
     def _run_python(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
@@ -245,6 +318,13 @@ class Workspace:
             raise
         except LatheError:
             raise
+        except SystemExit as exc:
+            # exit(), quit() and sys.exit() raise this, and `except Exception`
+            # does not catch it: the MCP server died and the workspace with it.
+            raise ProgramError(
+                "the program called exit()/sys.exit(%s). A program builds a "
+                "solid and assigns `result`; it does not end the session."
+                % (exc.code if exc.code is not None else "")) from None
         except Exception as exc:
             import traceback
             tb = traceback.extract_tb(exc.__traceback__)
@@ -270,101 +350,143 @@ class Workspace:
         spec = ns.get("spec", {})
         if not isinstance(spec, dict):
             raise ProgramError("`spec` must be a dict, got %s" % type(spec).__name__)
+        _require_body(solid)
         return solid, spec
 
     def apply(self, program: str, message: str = "",
               branch: Optional[str] = None,
-              language: str = "auto") -> Tuple[Commit, Solid, str, bool]:
-        """Run a program and commit its result. Returns (commit, solid, diff, is_new).
+              language: str = "auto") -> "ApplyResult":
+        """Run a program and commit its result.
 
-        `language` is "python", "lathe", or "auto", which reads the first
-        statement (see detect_language). It is resolved before the branch is
-        touched, so a bad value never leaves a half-made branch behind.
+        Returns an ApplyResult, which unpacks as (commit, solid, diff, is_new).
+
+        Nothing changes unless the program succeeds. A new branch is created, and
+        head moved, only at the point of committing; a program that fails leaves
+        the workspace exactly as it found it. The branch is the one named, or the
+        head *at the time of the call*, so concurrent calls land where they were
+        sent.
         """
         if language not in LANGUAGES:
             raise LatheError("language must be one of %s, got %r"
                              % (", ".join(LANGUAGES), language))
+        if branch is not None:
+            check_branch_name(branch)
         lang = detect_language(program) if language == "auto" else language
-        if branch is not None and branch not in self.branches:
-            self.branches[branch] = self.tip()
-            self.head = branch
-        elif branch is not None:
-            self.head = branch
-
-        parent = self.tip()
-        # Re-sending the program that produced the current tip changes nothing, so
-        # it must not create a commit. Addressing on (parent, program) alone does
-        # not catch this: once the program is applied, the tip *is* its own parent,
-        # so the identical text hashes to a different address next time.
-        if (parent is not None and self.commits[parent].program == program
-                and self.commits[parent].language == lang):
-            return self.commits[parent], self.solid(parent), "", False
-
-        # Python ids keep their pre-.lathe addresses; only the new language is
-        # salted, so identical text read as a different language is a new commit.
         salt = "" if lang == "python" else lang + "\x00"
-        cid = hashlib.sha256(
-            ((parent or "") + "\x00" + salt + program).encode("utf-8")).hexdigest()[:10]
-        if cid in self.commits:
-            return self.commits[cid], self.solid(cid), "", False
+
+        with self._lock:
+            target = branch if branch is not None else self.head
+            # A new branch forks from the head's tip as of now.
+            fork = (self.branches[target] if target in self.branches
+                    else self.branches[self.head])
+            # Re-sending the program that produced the tip changes nothing, so it
+            # must not create a commit. Addressing on (parent, program) alone does
+            # not catch this: once the program is applied, the tip *is* its own
+            # parent, so the identical text hashes to a different address.
+            if (fork is not None and self.commits[fork].program == program
+                    and self.commits[fork].language == lang):
+                self._land(target, fork)
+                return ApplyResult(self.commits[fork], self._solid_of(fork), "",
+                                   False, target)
 
         solid, spec, notes = self._run(program, lang)
         msh = solid.mesh()
         geom = hashlib.sha256(
             msh.verts.tobytes() + msh.tris.tobytes()).hexdigest()[:12]
+        n_components, volume = solid.components(), solid.volume()
+        tags = tuple(sorted(set(solid.tags.values())))
 
-        c = Commit(
-            id=cid, parent=parent, branch=self.head, program=program,
-            message=message, solid_name=solid.name, n_tris=solid.n_tris,
-            n_components=solid.components(), volume=solid.volume(),
-            geom_hash=geom, tags=tuple(sorted(set(solid.tags.values()))),
-            spec=dict(spec), created=time.time(), language=lang,
-            bevel_notes=notes,
-        )
-        self.commits[cid] = c
-        self._solids[cid] = solid
-        self.branches[self.head] = cid
-        self._order.append(cid)
+        with self._lock:
+            # Another call may have moved this branch while the program ran. Commit
+            # on top of wherever it is now: calls serialise, none is lost.
+            parent = self.branches[target] if target in self.branches else fork
+            cid = hashlib.sha256(
+                ((parent or "") + "\x00" + salt + program).encode("utf-8")
+            ).hexdigest()[:10]
+            if cid in self.commits:
+                # The same program on the same parent already exists, made on some
+                # other branch. This branch still has to move onto it: returning
+                # the existing commit and leaving the tip put left the branch where
+                # it was and told the caller nothing had changed.
+                moved = self.branches.get(target) != cid
+                self._land(target, cid)
+                return ApplyResult(self.commits[cid], self._solid_of(cid), "",
+                                   False, target, moved=moved)
+            c = Commit(
+                id=cid, parent=parent, branch=target, program=program,
+                message=message, solid_name=solid.name, n_tris=solid.n_tris,
+                n_components=n_components, volume=volume, geom_hash=geom,
+                tags=tags, spec=dict(spec), created=time.time(), language=lang,
+                bevel_notes=notes,
+            )
+            self.commits[cid] = c
+            self._solids[cid] = solid
+            self._order.append(cid)
+            self._land(target, cid)
+            diff = ""
+            if parent is not None:
+                diff = "\n".join(difflib.unified_diff(
+                    self.commits[parent].program.splitlines(),
+                    program.splitlines(),
+                    fromfile=parent, tofile=cid, lineterm="", n=2))
+            return ApplyResult(c, solid, diff, True, target)
 
-        diff = ""
-        if parent is not None:
-            diff = "\n".join(difflib.unified_diff(
-                self.commits[parent].program.splitlines(),
-                program.splitlines(),
-                fromfile=parent, tofile=cid, lineterm="", n=2))
-        return c, solid, diff, True
+    def _land(self, branch: str, cid: Optional[str]) -> None:
+        """Point `branch` at `cid`, creating it, and make it the head."""
+        with self._lock:
+            self.branches[branch] = cid
+            self.head = branch
+
+    def _solid_of(self, cid: str) -> Solid:
+        """The Solid of a commit that exists, without running anything twice."""
+        got = self._solids.get(cid)
+        if got is not None:
+            return got
+        return self.solid(cid)
 
     # -- branching ---------------------------------------------------------
 
     def new_branch(self, name: str, from_ref: Optional[str] = None) -> str:
-        if name in self.branches:
-            raise LatheError(
-                "branch %r already exists at %s. Use lathe_checkout to switch."
-                % (name, self.branches[name]))
-        self.branches[name] = self.resolve(from_ref) if (
-            from_ref or self.tip()) else None
-        self.head = name
-        return name
+        check_branch_name(name)
+        with self._lock:
+            if name in self.branches:
+                raise LatheError(
+                    "branch %r already exists at %s. Use lathe_checkout to switch."
+                    % (name, self.branches[name]))
+            self.branches[name] = self._resolve(from_ref) if (
+                from_ref or self.tip()) else None
+            self.head = name
+            return name
 
     def checkout(self, ref: str) -> str:
-        if ref in self.branches:
-            self.head = ref
-            return ref
-        cid = self.resolve(ref)
-        # Detached inspection is not worth modelling: name it so it is a branch.
-        name = "at-%s" % cid
-        self.branches[name] = cid
-        self.head = name
-        return name
+        with self._lock:
+            if ref in self.branches:
+                self.head = ref
+                return ref
+            cid = self._resolve(ref)
+            # Detached inspection is not worth modelling: name it so it is a
+            # branch. Going back to a commit you already checked out switches to
+            # that branch as it stands. Resetting it orphaned whatever had been
+            # committed on top.
+            name = "at-%s" % cid
+            if name not in self.branches:
+                self.branches[name] = cid
+            self.head = name
+            return name
 
     def log(self, limit: int = 20, branch: Optional[str] = None) -> List[Commit]:
-        cid = self.branches.get(branch or self.head)
-        out: List[Commit] = []
-        while cid is not None and len(out) < limit:
-            c = self.commits[cid]
-            out.append(c)
-            cid = c.parent
-        return out
+        with self._lock:
+            name = branch or self.head
+            if name not in self.branches:
+                raise LatheError("unknown branch %r. Branches: %s."
+                                 % (name, ", ".join(sorted(self.branches))))
+            cid = self.branches[name]
+            out: List[Commit] = []
+            while cid is not None and len(out) < limit:
+                c = self.commits[cid]
+                out.append(c)
+                cid = c.parent
+            return out
 
     def geometry_changed(self, a: str, b: str) -> bool:
         return self.commit(a).geom_hash != self.commit(b).geom_hash

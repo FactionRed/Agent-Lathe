@@ -419,5 +419,161 @@ class TestLatheLanguage(unittest.TestCase):
         self.assertNotIn("no uv set at all", server._check(commit.id))
 
 
+def _cube(w):
+    return "result = box(%g, %g, %g, tag='b', name='SM_Int_LOD0')" % (w, w, w)
+
+
+def _slow_cube(w, seconds):
+    return ("import time\ntime.sleep(%g)\n" % seconds) + _cube(w)
+
+
+class TestWorkspaceIntegrity(unittest.TestCase):
+    """State changes under a lock and only on success. Found by a bug hunt: a slow
+    call on one branch overlapping a fast call on another lost both commits."""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.base = self.ws.apply(_cube(0.1), "base")[0]
+
+    def _in_thread(self, results, key, *args, **kw):
+        import threading
+
+        def go():
+            try:
+                results[key] = self.ws.apply(*args, **kw)
+            except Exception as exc:  # pragma: no cover - reported below
+                results[key] = exc
+        t = threading.Thread(target=go)
+        t.start()
+        return t
+
+    def test_overlapping_applies_on_two_branches_both_land(self):
+        res = {}
+        slow = self._in_thread(res, "slow", _slow_cube(0.2, 0.8), "slow on X",
+                               branch="x")
+        import time
+        time.sleep(0.2)                     # the slow program is now running
+        fast = self._in_thread(res, "fast", _cube(0.3), "fast on Y", branch="y")
+        slow.join(30)
+        fast.join(30)
+        for k in ("slow", "fast"):
+            self.assertNotIsInstance(res[k], Exception, res[k])
+        self.assertEqual(self.ws.commits[self.ws.branches["x"]].message, "slow on X")
+        self.assertEqual(self.ws.commits[self.ws.branches["y"]].message, "fast on Y")
+        # Each is one commit on top of the base, and neither is orphaned.
+        for b in ("x", "y"):
+            self.assertEqual([c.message for c in self.ws.log(10, b)],
+                             [self.ws.commits[self.ws.branches[b]].message, "base"])
+
+    def test_overlapping_applies_on_one_branch_both_land_in_order(self):
+        res = {}
+        a = self._in_thread(res, "a", _slow_cube(0.2, 0.6), "first")
+        import time
+        time.sleep(0.15)
+        b = self._in_thread(res, "b", _cube(0.3), "second")
+        a.join(30)
+        b.join(30)
+        msgs = [c.message for c in self.ws.log(10, "main")]
+        self.assertEqual(sorted(msgs), ["base", "first", "second"])
+        self.assertEqual(len(self.ws.log(10, "main")), 3)
+
+    def test_a_failing_program_changes_nothing(self):
+        before = (dict(self.ws.branches), self.ws.head, len(self.ws.commits))
+        with self.assertRaises(ProgramError):
+            self.ws.apply("result = 1 / 0", "boom", branch="exp")
+        self.assertEqual(
+            (dict(self.ws.branches), self.ws.head, len(self.ws.commits)), before)
+        self.assertNotIn("exp", self.ws.branches)
+
+    def test_exit_in_a_program_is_an_error_not_the_end_of_the_session(self):
+        for src in ("import sys\nsys.exit(2)", "exit()", "raise SystemExit"):
+            with self.subTest(src=src):
+                with self.assertRaises(ProgramError) as ctx:
+                    self.ws.apply(src, "bye")
+                self.assertIn("exit", str(ctx.exception))
+        self.assertEqual(self.ws.apply(_cube(0.4), "still alive")[0].message,
+                         "still alive")
+
+    def test_the_same_program_on_a_second_branch_moves_that_branch(self):
+        """B7. alt forks from base; the same program on the same parent already
+        exists as a commit on main. The tip stayed on base before."""
+        self.ws.apply(_cube(0.2), "next on main")
+        main_tip = self.ws.branches["main"]
+        self.ws.new_branch("alt", from_ref=self.base.id)
+        res = self.ws.apply(_cube(0.2), "same on alt")
+        self.assertEqual(self.ws.branches["alt"], main_tip)
+        self.assertFalse(res[3])
+        self.assertTrue(res.moved)
+        self.assertEqual(res.branch, "alt")
+        self.assertEqual(self.ws.head, "alt")
+
+    def test_checking_out_a_commit_twice_keeps_what_was_done_there(self):
+        first = self.ws.apply(_cube(0.2), "second")[0]
+        name = self.ws.checkout(self.base.id)
+        extra = self.ws.apply(_cube(0.3), "work on the detached branch")[0]
+        again = self.ws.checkout(self.base.id)
+        self.assertEqual(again, name)
+        self.assertEqual(self.ws.branches[name], extra.id)
+        self.assertIn(extra.id, [c.id for c in self.ws.log(10, name)])
+        self.assertIsNotNone(first)
+
+    def test_refs_that_are_not_refs_say_so(self):
+        self.ws.apply(_cube(0.2), "b")
+        for ref in ("HEAD~abc", "HEAD~-1", "HEAD~ 1", "HEAD~1.0"):
+            with self.subTest(ref=ref):
+                with self.assertRaises(LatheError) as ctx:
+                    self.ws.resolve(ref)
+                self.assertNotIsInstance(ctx.exception, ValueError)
+        self.assertEqual(self.ws.resolve("HEAD~1~0"), self.ws.resolve("HEAD~"))
+        self.assertEqual(self.ws.resolve("HEAD~0"), self.ws.resolve("HEAD"))
+
+    def test_branch_names_cannot_be_read_as_refs(self):
+        for name in ("", "HEAD", "HEAD~1", "a b", "x" * 65, "-lead", "a:b", "../x"):
+            with self.subTest(name=name):
+                with self.assertRaises(LatheError):
+                    self.ws.new_branch(name)
+                with self.assertRaises(LatheError):
+                    self.ws.apply(_cube(0.5), "x", branch=name)
+        self.assertEqual(self.ws.new_branch("wider-seat/v2.1"), "wider-seat/v2.1")
+
+    def test_the_log_of_a_branch_that_does_not_exist_is_an_error(self):
+        with self.assertRaises(LatheError) as ctx:
+            self.ws.log(5, "nope")
+        self.assertIn("main", str(ctx.exception))
+
+
+class TestEmptyResults(unittest.TestCase):
+    """box(0mm, ...) and box(-5mm, ...) used to commit an empty solid, and every
+    later tool failed with 'max() iterable argument is empty'."""
+
+    def test_empty_and_negative_boxes_are_refused_and_leave_no_commit(self):
+        for src in ("result = box(0, 0.1, 0.1, name='SM_E_LOD0')",
+                    "result = box(-0.005, 0.1, 0.1, name='SM_E_LOD0')",
+                    "result = cylinder(1, 0, name='SM_E_LOD0')",
+                    "a = box(0.1, 0.1, 0.1, name='SM_E_LOD0')\n"
+                    "result = a - box(1, 1, 1, name='x')"):
+            with self.subTest(src=src):
+                ws = Workspace()
+                # The boolean that removes everything is already refused by the
+                # kernel wrapper; the rest used to commit an empty solid.
+                with self.assertRaises(LatheError):
+                    ws.apply(src, "empty")
+                self.assertEqual(ws.commits, {})
+
+    def test_a_zero_sized_box_names_the_cause(self):
+        with self.assertRaises(ProgramError) as ctx:
+            Workspace().apply("result = box(0, 0.1, 0.1, name='SM_E_LOD0')", "e")
+        self.assertIn("empty", str(ctx.exception))
+
+    def test_a_lathe_program_with_an_empty_result_is_refused_too(self):
+        ws = Workspace()
+        src = ('let a = box(100mm, 100mm, 100mm)\n'
+               'let b = a - box(1m, 1m, 1m)\n'
+               'emit "SM_E_LOD0" {}\n')
+        with self.assertRaises(ProgramError):
+            ws.apply(src, "empty")
+        self.assertEqual(ws.commits, {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

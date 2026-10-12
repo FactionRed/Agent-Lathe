@@ -79,6 +79,22 @@ def kinds(result):
     return [getattr(b, "type", type(b).__name__) for b in result.content]
 
 
+async def _bounded(coro, seconds=900):
+    """A server that dies mid-run (a program that called exit(), once) leaves the
+    client waiting forever. Fail instead of hanging the suite."""
+    try:
+        return await asyncio.wait_for(coro, seconds)
+    except asyncio.TimeoutError:
+        print("  FAIL the wire test did not finish in %d s: the server is hung "
+              "or dead" % seconds)
+        return 1
+
+
+async def _after(delay, coro):
+    await asyncio.sleep(delay)
+    return await coro
+
+
 async def main():
     do_render = "--render" in sys.argv
     params = StdioServerParameters(
@@ -318,6 +334,34 @@ async def main():
                 "branch": "stdio_lathe"}})
             check("language can be forced", "PROGRAM ERROR" in text_of(r))
 
+            # -- state integrity over the wire (bug hunt B3, B4) ------------
+            slow = ("import time\ntime.sleep(1.5)\n"
+                    "result = box(0.2, 0.2, 0.2, tag='b', name='SM_Slow_LOD0')\n")
+            fast = "result = box(0.3, 0.3, 0.3, tag='b', name='SM_Fast_LOD0')\n"
+            ra, rb = await asyncio.gather(
+                s.call_tool("lathe_apply", {"params": {
+                    "program": slow, "branch": "wire_x", "message": "slow on x"}}),
+                _after(0.4, s.call_tool("lathe_apply", {"params": {
+                    "program": fast, "branch": "wire_y", "message": "fast on y"}})))
+            check("overlapping applies both succeed",
+                  "PROGRAM ERROR" not in text_of(ra)
+                  and "PROGRAM ERROR" not in text_of(rb))
+            lx = text_of(await s.call_tool("lathe_log", {"params": {"branch": "wire_x"}}))
+            ly = text_of(await s.call_tool("lathe_log", {"params": {"branch": "wire_y"}}))
+            check("the slow commit is on its own branch", "slow on x" in lx, lx[:200])
+            check("the fast commit is on its own branch", "fast on y" in ly, ly[:200])
+
+            r = await s.call_tool("lathe_apply", {"params": {
+                "program": "import sys\nsys.exit(2)\n", "branch": "wire_exit"}})
+            check("exit() is a program error", "PROGRAM ERROR" in text_of(r),
+                  text_of(r)[:120])
+            r = await s.call_tool("lathe_query", {"params": {"expr": "bbox"}})
+            check("the server is still alive after exit()",
+                  "PROGRAM ERROR" not in text_of(r) and len(text_of(r)) > 0,
+                  text_of(r)[:120])
+            lg = text_of(await s.call_tool("lathe_log", {"params": {}}))
+            check("a failed program left no branch", "wire_exit" not in lg)
+
     print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
     for f in FAIL:
         print("  FAILED: %s" % f)
@@ -329,9 +373,9 @@ def test_server_over_stdio():
     """The wire checks above, as one pytest case; failures name every label."""
     PASS.clear()
     FAIL.clear()
-    code = asyncio.run(main())
+    code = asyncio.run(_bounded(main()))
     assert code == 0 and not FAIL, "wire checks failed: %s" % FAIL
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(asyncio.run(_bounded(main())))

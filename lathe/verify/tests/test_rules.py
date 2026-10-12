@@ -619,5 +619,56 @@ class TestMultiFault(unittest.TestCase):
                 self.assertTrue(f.repair.text())
 
 
+class TestNothingToVerify(unittest.TestCase):
+    """E105 on assets that have no bad *face*, and are not assets.
+
+    Two coincident quads wound opposite ways pair every edge, so E101 passes, and
+    neither has zero area, so nothing else spoke: PASS on a sheet that encloses no
+    volume. An empty mesh passed too, and with a declared component count it
+    crashed E108 on max() of nothing, which reached the user as "validation could
+    not run".
+    """
+
+    @staticmethod
+    def _cube(s=0.1, off=(0.0, 0.0, 0.0)):
+        import numpy as np
+        v = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)],
+                     float) * s + np.array(off)
+        f = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4),
+             (1, 5, 7, 3)]
+        return v, f
+
+    def _run(self, verts, faces, **spec):
+        from ..mesh import AssetMesh, EmitSpec
+        return run(Asset(mesh=AssetMesh("SM_A_B_LOD0", verts, faces),
+                         spec=EmitSpec(**spec)))
+
+    def test_a_cube_is_clean(self):
+        v, f = self._cube()
+        self.assertEqual(list(self._run(v, f, components=1).findings), [])
+
+    def test_a_double_sided_sheet_is_hollow(self):
+        import numpy as np
+        v = np.array([(0, 0, 0.3), (1, 0, 0.3), (1, 1, 0.3), (0, 1, 0.3)]) * 0.1
+        report = self._run(v, [(0, 1, 2, 3), (0, 3, 2, 1)], components=1)
+        self.assertEqual([f.code for f in report.errors], ["E105"])
+        self.assertIn("enclosing no volume", report.errors[0].summary)
+        self.assertFalse(report.passed)
+
+    def test_a_genuinely_thin_closed_plate_is_not_hollow(self):
+        """The control. 1 m x 1 m x 0.2 mm has a tiny volume and a lot of it."""
+        v, f = self._cube(1.0)
+        v[:, 2] *= 2e-4
+        self.assertEqual(list(self._run(v, f, components=1).findings), [])
+
+    def test_an_empty_mesh_fails_and_does_not_crash(self):
+        import numpy as np
+        for spec in ({}, {"components": 1}):
+            with self.subTest(spec=spec):
+                report = self._run(np.zeros((0, 3)), [], **spec)
+                self.assertFalse(report.passed)
+                self.assertIn("E105", [f.code for f in report.errors])
+
+
 if __name__ == "__main__":
     unittest.main()
