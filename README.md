@@ -39,7 +39,7 @@ reasons rather than prompt-quality ones.
 
 | Asset | Tris | Verifier |
 |---|---|---|
-| `SM_Chair_Oak_LOD0` | 2,316 | PASS — 0 error, 0 warn, 0 note |
+| `SM_Chair_Oak_LOD0` | 2,324 | PASS — 0 error, 0 warn, 0 note |
 | `SM_BowlFruit_Ceramic_LOD0` | 5,848 | PASS — 0 error, 0 warn, 0 note |
 | `SM_Villager_Stylized_LOD0` | 2,446 | PASS — 0 error, 0 warn, 0 note |
 
@@ -57,8 +57,8 @@ reasons rather than prompt-quality ones.
   layouts rather than reporting *not checked*.
 - High-to-low baking of normal and AO maps, with cage extrusion derived from the subject's own
   size and Flip Y switched by target engine. Moves a bevel out of geometry and into texture:
-  the chair drops from 2,316 triangles to **300**, and its density spread from 140% off target
-  to 24%.
+  the chair drops from 2,324 triangles to **308**, and its density spread from 202% off target
+  to 17%.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.
 - Export: OBJ and STL written natively, glTF/FBX/USD/PLY through Blender, transform applied.

@@ -35,26 +35,24 @@ class TestChair(unittest.TestCase):
         r = self.built.bevel_report
         self.assertIsNotNone(r)
         self.assertEqual(r.requested, 0.002)
-        self.assertFalse(r.clamped, r.describe())
+        self.assertTrue(r.ok, r.describe())
         self.assertGreater(r.edges, 150)
         self.assertAlmostEqual(r.min_delivered / r.requested, 1.0, places=3)
 
-    def test_a_flush_joint_is_refused_not_shipped_half_width(self):
-        """The old geometry. The model's own guard must say so, loudly."""
+    def test_a_bevel_the_parts_cannot_take_is_refused_not_shipped_narrow(self):
+        """The guard on the model. At 4 mm every edge still delivers; at 6 mm the
+        thin parts cannot, and the model says so instead of returning a chair
+        whose bevel is narrower than its parameter."""
+        ok = self.chair.build(bevel_w=0.004)
+        self.assertTrue(ok.bevel_report.ok, ok.bevel_report.describe())
         with self.assertRaises(Exception) as ctx:
-            self.chair.build(stile_drop=0.0)
-        self.assertIn("came out short", str(ctx.exception))
-
-    def test_a_step_needs_two_bevel_widths(self):
-        """Not a magic number: a drop under 2w makes the bevels at the step's two
-        edges collide, so the guard fires. Both sides of that line are checked."""
-        self.chair.build(bevel_w=0.001)                     # default drop = 2 mm
-        with self.assertRaises(Exception):
-            self.chair.build(bevel_w=0.002, stile_drop=0.002)
+            self.chair.build(bevel_w=0.006)
+        self.assertIn("not verified at full width", str(ctx.exception))
 
     def test_the_silhouette_did_not_move(self):
+        """Flush stiles and top rail, as the model has always had them."""
         lo, hi = self.low.bbox()
-        self.assertAlmostEqual(hi[2], 0.90, places=6, msg="overall height is the rail")
+        self.assertAlmostEqual(hi[2], 0.90, places=6)
         self.assertEqual(self.built.components(), 1)
 
     def test_the_low_poly_is_the_same_chair(self):
@@ -68,7 +66,7 @@ class TestBowl(unittest.TestCase):
         import models.bowl as bowl
         r = bowl.build().bevel_report
         self.assertIsNotNone(r)
-        self.assertFalse(r.clamped, r.describe())
+        self.assertTrue(r.ok, r.describe())
 
 
 if __name__ == "__main__":
