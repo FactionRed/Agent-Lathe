@@ -16,7 +16,7 @@ from .solid import (  # noqa: F401
     sphere,
     union_all,
 )
-from .bevel import bevel, bevel_available  # noqa: F401
+from .bevel import bevel, bevel_available, report_bevel  # noqa: F401
 from .uvmap import (  # noqa: F401
     PADDING_TABLE,
     island_labels,
@@ -30,7 +30,7 @@ __all__ = [
     "Solid", "Selection", "LatheError", "CardinalityError",
     "box", "cylinder", "sphere", "revolve", "extrude",
     "array", "union_all", "assert_count", "mm", "bowl_profile",
-    "bevel", "bevel_available",
+    "bevel", "bevel_available", "report_bevel",
     "unwrap", "rescale_to_density", "texel_density", "island_labels",
     "overlap_fraction", "PADDING_TABLE",
 ]

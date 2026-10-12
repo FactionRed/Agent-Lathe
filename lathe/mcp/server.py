@@ -1183,8 +1183,20 @@ async def lathe_setup(params: SetupInput) -> str:
         "  on branch %s" % commit.branch,
         "",
     ]
+    for note in commit.bevel_notes:
+        head, _, tail = note.partition("\n")
+        out.append("  ! %s" % head)
+        if tail:
+            out.append("    %s" % tail)
     try:
-        out.append(_check(commit.id))
+        verdict = _check(commit.id)
+        out.append(verdict)
+        if "FAIL" in verdict.splitlines()[0]:
+            # A welcome piece that fails the project's own verifier is a defect in
+            # the generator. Reporting READY above it, as before, read as success.
+            out += ["", "!! this welcome piece FAILS the verifier. That is a bug in "
+                    "the generator, not in your environment -- the program below "
+                    "is still a fair starting point, but report the seed."]
     except Exception as exc:
         out.append("  validation could not run: %s" % exc)
 
