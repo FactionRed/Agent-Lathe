@@ -230,6 +230,16 @@ What the two paths still do not share:
 
 - **No loops or functions in `.lathe`.** Procedural work stays in Python, where a bare
   `600` is again a silent metres-versus-millimetres bug rather than a compile error.
+- **`unit`, `scene` and `mat ... on` are accepted and not read.** A program written to
+  DESIGN.md §4 still parses, and `lathe_apply` prints a `!` note saying each had no effect
+  rather than letting them read as honoured. Everything else is checked: a function given an
+  argument it does not take (`box(depth = 1mm)`, `bevel(segmants = 9)`) is an error, as are an
+  array `count` outside 1..1024, an `axis` that is not X, Y or Z, a second `emit`, a key
+  given twice in an `emit` block, and a typed option of the wrong kind (`components : 1mm`).
+- **A `let` after `emit` is a helper.** `emit` (or `let result = ...`) names what ships; a
+  scratch solid bound later no longer replaces it.
+- **`bevel(solid, sel, ...)` bevels exactly the edges of `sel`**, and refuses an empty
+  selection or one taken from a different solid.
 - **No `import_glb` in `.lathe`.** Reading a file breaks purity (§9) and the language has
   no way to say it yet. Use the `lathe_import` tool.
 - **Joints and poses do not surface.** A rigged `.lathe` program builds, and the solid is

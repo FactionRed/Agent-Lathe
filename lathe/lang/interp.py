@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import build as B
 from ..build.solid import CardinalityError, LatheError, Selection, Solid
 from . import syntax as S
+from .syntax import split_lines
 from . import values as V
 from .values import UnitError
 
@@ -68,6 +69,25 @@ class LatheRuntimeError(LatheError):
 
 
 AXES = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+
+# A boolean over this many instances is minutes of work with no way to stop it.
+MAX_ARRAY_COUNT = 1024
+
+# function -> (most positional arguments, accepted keyword names)
+_CALL_SHAPES = {
+    "box": (3, {"tag"}),
+    "cylinder": (2, {"radius_top", "segments", "tag"}),
+    "sphere": (1, {"segments", "tag"}),
+    "revolve": (1, {"segments", "degrees", "tag"}),
+    "extrude": (2, {"tag"}),
+    "array": (1, {"count", "span", "axis"}),
+    "union": (None, set()),
+    "bevel": (2, {"width", "segments", "clamp", "profile"}),
+    "count": (1, set()),
+    "components": (1, set()),
+    "volume": (1, set()),
+    "tris": (1, set()),
+}
 ORIGINS = ("bottom_center", "center", "as_built")
 
 # Selector predicate attribute -> (domain, kwarg builder)
@@ -84,7 +104,7 @@ _FACE_PREDS = {
 class Interp:
     def __init__(self, src: str):
         self.src = src
-        self.lines = src.splitlines()
+        self.lines = split_lines(src)
         self.env: Dict[str, V.Value] = {}
         self.params: Dict[str, V.Value] = {}
         self.settings: Dict[str, Dict[str, str]] = {}
@@ -102,7 +122,14 @@ class Interp:
         self.emit_name: Optional[str] = None
         self.emit_options: Dict[str, Any] = {}
         self.result: Optional[Solid] = None
+        # Once `emit` or `let result` has named what ships, a later `let` is a
+        # helper and does not replace it. Before this the last solid bound won,
+        # so a scratch solid after the emit shipped under the asset's name.
+        self.pinned = False
+        self.pinned_by_emit = False
         self.assertions = 0
+        # Things the program said that nothing reads. (head, advice) pairs.
+        self.notes: List[Tuple[str, str]] = []
 
     # -- helpers ----------------------------------------------------------
 
@@ -140,17 +167,29 @@ class Interp:
             val = self.eval(node.expr)
             self.env[node.name] = val
             if isinstance(val, V.Opaque) and isinstance(val.obj, Solid):
-                # The last solid bound wins, so a program without `emit` still
-                # has an obvious answer.
-                self.result = val.obj
                 if node.name == "result":
+                    self.result = val.obj
+                    self.pinned = True
+                elif not self.pinned:
+                    # With no `emit` and no `result`, the last solid bound is the
+                    # answer, so a short program still has an obvious one.
                     self.result = val.obj
         elif isinstance(node, S.Assert):
             self.do_assert(node)
         elif isinstance(node, S.Setting):
             self.settings.setdefault(node.group, {}).update(node.items)
+            self.notes.append((
+                "`%s %s` is accepted and has no effect" % (
+                    node.group, " ".join(node.items) or ""),
+                "Lengths are metres inside Lathe and the number carries its "
+                "unit, so there is nothing here to set. The line is kept so a "
+                "program written to DESIGN.md section 4 still reads."))
         elif isinstance(node, S.Material):
             self.do_material(node)
+            self.notes.append((
+                "`mat %s on ...` is recorded and nothing reads it yet" % node.name,
+                "Pass materials to lathe_observe or lathe_view to colour the "
+                "preview; they do not reach the verifier or an export."))
         elif isinstance(node, S.UVSet):
             self.do_uv(node)
         elif isinstance(node, S.Joint):
@@ -238,7 +277,8 @@ class Interp:
         except (UnitError, LatheError) as exc:
             raise LatheRuntimeError(str(exc), node, self.line_of(node)) from None
 
-        self.result = solid
+        if not self.pinned or target.obj is self.result:
+            self.result = solid
         # Rebind the name the program used, so later statements see the UVs.
         for key, val in list(self.env.items()):
             if isinstance(val, V.Opaque) and val.obj is target.obj:
@@ -433,10 +473,70 @@ class Interp:
         if self.result is None:
             self.die("emit has no solid to write", node,
                      "Bind one with `let` before emitting.")
+        if self.pinned_by_emit:
+            self.die("a program has one `emit`; this is the second", node,
+                     "Put the options in one block. The first emit named %r."
+                     % self.emit_name)
+        self.pinned_by_emit = True
+        self.pinned = True
         self.emit_name = node.name
         self.result = self.result.rename(node.name)
+        self.emit_options = {}
         for key, expr in node.options.items():
-            self.emit_options[key] = self.emit_value(key, expr)
+            self.emit_options[key] = self.typed_emit(key, expr)
+
+    def typed_emit(self, key: str, expr: S.Node) -> Any:
+        """An emit option, checked against what it is for.
+
+        components : 1mm read as 0, 1.9 as 1, texel_density : 10mm as 0.01 and
+        "two" raised a bare ValueError with no line, because every value was
+        coerced and none was checked.
+        """
+        val = self.emit_value(key, expr)
+        if key in ("components", "texture_resolution", "texel_density"):
+            ev = self.eval(expr)
+            if isinstance(ev, (V.Length, V.Angle)):
+                self.die(
+                    "%s is a %s, not a length or an angle: `%s` carries a unit"
+                    % (key, "count" if key != "texel_density" else
+                       "number of pixels per centimetre", self.src_of(expr)),
+                    expr, "Write the plain number, e.g. `%s: %s`" % (
+                        key, {"components": "1", "texture_resolution": "1024",
+                              "texel_density": "5.12"}[key]))
+            if not isinstance(ev, V.Scalar) or isinstance(val, bool):
+                self.die("%s must be a number, got %s" % (key, ev.describe()), expr)
+            num = float(ev.v)
+            if key == "texel_density":
+                if not num > 0:
+                    self.die("texel_density must be positive, got %g" % num, expr)
+                return num
+            if num != int(num) or num < (0 if key == "components" else 1):
+                self.die("%s must be a whole number%s, got %g" % (
+                    key, "" if key == "components" else " of pixels", num), expr)
+            return int(num)
+        if key == "budget":
+            if not isinstance(val, dict):
+                self.die("budget must be a block, e.g. `budget: { tris_lod0: 1500 }`",
+                         expr)
+            for name, n in val.items():
+                if isinstance(n, bool) or n != int(n) or n < 0:
+                    self.die("budget %s must be a whole number of triangles, got %r"
+                             % (name, n), expr)
+            return {k: int(v) for k, v in val.items()}
+        if key in ("profile", "target", "origin"):
+            if not isinstance(val, str):
+                self.die("%s is a name, e.g. `%s: %s`" % (
+                    key, key, {"profile": "game_prop_pbr", "target": "unreal",
+                               "origin": "bottom_center"}[key]), expr)
+            if key == "origin" and val not in ORIGINS:
+                self.die("origin must be one of %s, got %r"
+                         % (", ".join(ORIGINS), val), expr)
+            return val
+        return val
+
+    def src_of(self, expr) -> str:
+        line = self.line_of(expr).strip()
+        return line if len(line) < 60 else line[:57] + "..."
 
     def emit_value(self, key: str, expr: S.Node) -> Any:
         if isinstance(expr, S.Name):
@@ -581,6 +681,20 @@ class Interp:
             self.die("%s() does not take predicates" % node.func, node,
                      "Predicates like `dihedral > 60deg` belong in .edges() "
                      "and .faces().")
+        shape = _CALL_SHAPES.get(node.func)
+        if shape is not None:
+            max_args, allowed = shape
+            if max_args is not None and len(node.args) > max_args:
+                self.die("%s() takes at most %d positional argument(s), got %d"
+                         % (node.func, max_args, len(node.args)), node)
+            stray = sorted(set(node.kwargs) - allowed)
+            if stray:
+                # Accepted and ignored is how `bevel(only_tags = ...)`,
+                # `box(depth = ...)` and `bevel(segmants = 9)` all built, and
+                # built the wrong thing.
+                self.die("%s() has no argument %s" % (
+                    node.func, ", ".join(repr(k) for k in stray)), node,
+                    "Arguments: %s." % (", ".join(sorted(allowed)) or "none"))
         try:
             return fn(node)
         except (UnitError, CardinalityError) as exc:
@@ -676,12 +790,21 @@ class Interp:
     def fn_array(self, node) -> V.Value:
         base = self.solid_arg(node, 0)
         count = V.as_int(self.kw(node, "count", V.Scalar(1)), "count")
+        if not 1 <= count <= MAX_ARRAY_COUNT:
+            self.die("array count must be between 1 and %d, got %d"
+                     % (MAX_ARRAY_COUNT, count), node,
+                     "A union of this many instances takes minutes and cannot "
+                     "be interrupted; build it in pieces." if count > 1 else
+                     "count = 0 or less made an empty list that every later "
+                     "statement then failed on.")
         span = self.kw(node, "span")
         span_m = 0.0 if span is None else V.as_metres(span, "span")
         axis = self.kw(node, "axis", V.Text("X"))
-        ax = V.as_text(axis, "axis").lower() if isinstance(axis, V.Text) else "x"
+        if not isinstance(axis, V.Text):
+            self.die("axis must be X, Y or Z, got %s" % axis.describe(), node)
+        ax = V.as_text(axis, "axis").lower()
         if ax not in ("x", "y", "z"):
-            self.die("axis must be X, Y or Z", node)
+            self.die("axis must be X, Y or Z, got %r" % axis.s, node)
         out = B.array(lambda i: base, count, axis=ax, span=span_m, center=True)
         return V.Opaque(out, "list")
 
@@ -703,15 +826,26 @@ class Interp:
             self.die("bevel() needs width =", node,
                      "e.g. bevel(carved, rim, width = 4mm, segments = 2)")
         segs = self.kw(node, "segments")
-        min_d = 30.0
-        if sel is not None:
-            # Reuse the predicate the selection already carries, so the worker
-            # picks the same edges the program asked for.
-            min_d = _min_dihedral_of(sel)
+        clamp = self.kw(node, "clamp")
+        if clamp is not None and not isinstance(clamp, V.Bool):
+            self.die("bevel() clamp must be true or false, got %s" % clamp.describe(),
+                     node)
+        profile = self.kw(node, "profile")
+        prof = 0.5 if profile is None else V.as_number(profile, "profile")
+        if not 0.0 < prof <= 1.0:
+            self.die("bevel() profile must be in (0, 1], got %g" % prof, node,
+                     "0.5 is a circular arc; 1 is a square corner pulled out.")
+        if sel is not None and sel.domain != "edges":
+            self.die("bevel()'s second argument must be an EDGE selection, got "
+                     "faces", node, "Select edges: carved.edges(dihedral > 60deg)")
+        # The selection is the edge set: it is handed over whole, not reduced to
+        # its dihedral threshold (which beveled every edge over it, whatever else
+        # the selection said).
         return V.Opaque(B.bevel(
             solid, V.as_metres(width, "bevel width"),
             segments=2 if segs is None else V.as_int(segs, "segments"),
-            min_dihedral=min_d), "solid")
+            clamp=True if clamp is None else clamp.b, profile=prof,
+            edges=sel), "solid")
 
     # -- measures
 
@@ -802,8 +936,6 @@ class Interp:
             sel = solid.faces(**kw) if domain == "faces" else solid.edges(**kw)
         except LatheError as exc:
             raise LatheRuntimeError(str(exc), node, self.line_of(node)) from None
-        if domain == "edges":
-            _remember_dihedral(sel, kw.get("dihedral_gt", 30.0))
         return V.Opaque(sel, "selection")
 
     def _xyz(self, node) -> Tuple[float, float, float]:
@@ -849,19 +981,6 @@ class Interp:
             self.die("rename() needs a name", node)
         return V.Opaque(solid.rename(V.as_text(self.eval(node.args[0]), "name")),
                         "solid")
-
-
-# Selection is frozen, so the dihedral used to build it rides in a side table
-# rather than on the object. bevel() needs it to pick the same edges.
-_DIHEDRAL_MEMO: "dict[int, float]" = {}
-
-
-def _remember_dihedral(sel: Selection, deg: float) -> None:
-    _DIHEDRAL_MEMO[id(sel)] = deg
-
-
-def _min_dihedral_of(sel: Selection) -> float:
-    return _DIHEDRAL_MEMO.get(id(sel), 30.0)
 
 
 def run(src: str):

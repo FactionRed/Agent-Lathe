@@ -103,9 +103,23 @@ class Token:
     value: Optional[float] = None
 
 
+def split_lines(src: str) -> List[str]:
+    """Source lines, split on \\n, \\r\\n and \\r only, with a BOM dropped.
+
+    str.splitlines() also splits on \\x0b, \\x0c, \\x1c-\\x1e, \\x85 and U+2028/9,
+    which shifted every later line number and let a `# comment<U+2028>code`
+    leak its tail out of the comment.
+    """
+    text = src.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def tokenize(src: str) -> List[Token]:
     toks: List[Token] = []
-    lines = src.splitlines()
+    lines = split_lines(src)
     for lineno, raw in enumerate(lines, start=1):
         i, n = 0, len(raw)
         while i < n:
@@ -350,7 +364,7 @@ _PRED_OPS = ("<", "<=", ">", ">=", "==", "!=")
 class Parser:
     def __init__(self, src: str):
         self.src = src
-        self.lines = src.splitlines()
+        self.lines = split_lines(src)
         self.toks = tokenize(src)
         self.i = 0
 
@@ -588,6 +602,10 @@ class Parser:
             if key.kind not in ("ident", "keyword", "string"):
                 self.fail("expected a key")
             self.next()
+            if key.text in items:
+                # A dict kept the last, and the first was dropped without a word.
+                self.fail("%r is given twice in this block; keep one" % key.text,
+                          tok=key)
             if self.at_op(":"):
                 self.next()
             elif self.at_op("="):
