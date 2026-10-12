@@ -71,6 +71,13 @@ def main():
     report["coplanar_edges_merged"] = len(flat)
     report["faces_after_dissolve"] = len(bm.faces)
 
+    # Every logical face gets an id that survives the bevel. bmesh rebuilds the
+    # faces it shrinks and copies their custom data onto the rebuilt ones, which
+    # is the same mechanism the part tags ride, so this follows a face through it.
+    fid_lay = bm.faces.layers.int.new("lathe_fid")
+    for i, f in enumerate(bm.faces):
+        f[fid_lay] = i
+
     # 2. Pick edges by predicate, exactly as the program asked.
     only = p.get("only_parts")
     min_d = np.radians(p.get("min_dihedral", 30.0))
@@ -102,8 +109,10 @@ def main():
     # when clamp_overlap shrank it. Row layout: a, b, then (normal, inward) for
     # each of the two faces.
     picked_xyz = []
+    picked_fids = []
     for e in picked:
         row = [list(e.verts[0].co), list(e.verts[1].co)]
+        picked_fids.append([f[fid_lay] for f in e.link_faces])
         for f in e.link_faces:
             # The edge as this face winds it: inward is to its left.
             d_f = None
@@ -126,6 +135,24 @@ def main():
     new_faces = [f for f in res.get("faces", []) if f.is_valid]
     report["faces_created"] = len(new_faces)
 
+    # The width delivered is read off the faces the bevel did NOT create: each
+    # original face survives as a smaller polygon, and the vertices of that
+    # polygon nearest the old edge are the boundary of the bevel on that face.
+    # This replaced a search of the output triangles by normal and plane, which
+    # broke on faces bmesh had merged across <1 degree and on fine strips.
+    fresh = set(new_faces)
+    survivors = {}
+    for f in bm.faces:
+        if f in fresh:
+            continue
+        survivors[int(f[fid_lay])] = [list(v.co) for v in f.verts]
+    side_verts, side_off = [], [0]
+    for fids in picked_fids:
+        for k in (0, 1):
+            if k < len(fids):
+                side_verts.extend(survivors.get(int(fids[k]), []))
+            side_off.append(len(side_verts))
+
     # 4. THE tag rule. Non-inheriting: the new faces carry the bevel id only.
     #    Leaving bmesh's interpolated masks in place is precisely the section 13
     #    drift, measured at 97 wrongly attributed triangles.
@@ -140,10 +167,11 @@ def main():
                           ngon_method="BEAUTY")
     bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
     report["status"] = "ok"
-    _write(out_path, bm, lay, report, picked_xyz)
+    _write(out_path, bm, lay, report, picked_xyz, side_verts, side_off)
 
 
-def _write(out_path, bm, lay, report, picked_xyz=()):
+def _write(out_path, bm, lay, report, picked_xyz=(), side_verts=(),
+           side_off=(0,)):
     bm.verts.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
     for i, v in enumerate(bm.verts):
@@ -163,6 +191,8 @@ def _write(out_path, bm, lay, report, picked_xyz=()):
         tris=np.array(tris, dtype=np.int64).reshape(-1, 3),
         part_id=np.array(parts, dtype=np.int64),
         picked_edges=np.array(picked_xyz, dtype=np.float64).reshape(-1, 6, 3),
+        side_verts=np.array(side_verts, dtype=np.float64).reshape(-1, 3),
+        side_off=np.array(side_off, dtype=np.int64),
         report=np.array([json.dumps(report)]),
     )
     bm.free()

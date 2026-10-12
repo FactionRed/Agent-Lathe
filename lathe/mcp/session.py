@@ -214,7 +214,7 @@ class Workspace:
             else:
                 solid, spec = self._run_python(program)
         notes = tuple(
-            r.describe() + "\n" + r.advice() for r in reports if r.clamped)
+            r.describe() + "\n" + r.advice() for r in reports if not r.ok)
         return solid, spec, notes
 
     def _run_lathe(self, program: str) -> Tuple[Solid, Dict[str, Any]]:

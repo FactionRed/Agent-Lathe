@@ -823,13 +823,30 @@ system adoptable before it is trusted.
    *Decision: report, do not flip the default.* `clamp=False` can fold the surface over
    itself on a genuinely too-large width, and no referee has a closed form for that, so
    making it the default would trade a reported shortfall for an unreportable fault.
-   `bevel()` now measures the width actually delivered on each picked edge, from the output
-   mesh and the pre-bevel face planes, and returns it as `Solid.bevel_report`. `lathe_apply`
-   prints a `!` note when any edge came out short, naming the worst edge and the way out.
-   The measurement is per face, because the first version (every bevel vertex near an edge)
-   let a neighbour's strip lend its width and read a 62.5% clamp as 88%. It is checked
-   against the referee: bevelling again with `clamp=False` at the reported width gives the
-   same solid. The delivery gap itself stays pinned as an `expectedFailure`.
+   `bevel()` now measures the width actually delivered on each picked edge and returns it as
+   `Solid.bevel_report`. `lathe_apply` prints a `!` note when any edge came out short or could
+   not be measured, naming the worst edge and the way out.
+
+   *How it measures, and what that took.* Each original face survives a bevel as a smaller
+   polygon, and the worker hands back that polygon for both sides of every picked edge (faces
+   are followed through bmesh's rebuild by an id layer, the mechanism the part tags ride). The
+   width on a side is the offset of the polygon's outline *segment parallel to the old edge*;
+   an edge's width is the smaller side. Three earlier versions each read a defect as a fact.
+   Every output vertex near an edge let a neighbour's strip lend its width (62.5% read as 88%).
+   Triangles matched by normal and plane read a tiny edge's 0.025 mm as 99.94 mm delivered, and
+   a 32-segment 1 mm bevel as 95% short, because arc vertices sat inside the plane tolerance.
+   The nearest outline point read the chair's exact 0.99 mm as 0.41 mm, because the outline at
+   a corner follows the vertex patch's arc to within half a width of the edge's end. The bug
+   hunt found the first two. The lesson is that "close to the edge" is not "the boundary".
+
+   *An unmeasured edge is a state, not a width.* A side whose polygon is gone or has no
+   parallel outline in range is NaN, counted as `unmeasured`, and a report with any is not
+   `ok`. Zero would read as a shortfall and the request as a pass; neither is known. The
+   mesh is also recentred before it reaches Blender, which holds float32: 1 km out is 0.1 mm of
+   noise, and 100 km lost the bevel (volume -20%) while reporting it delivered.
+
+   It is checked against the referee: bevelling again with `clamp=False` at the reported
+   width gives the same solid. The delivery gap itself stays pinned as an `expectedFailure`.
 
    *Not done.* OCCT was not re-run on curved input, so the *comparison* that §11 rests on is
    still one-sided: bmesh is now known to be good on curved input, not known to be better
