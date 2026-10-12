@@ -1201,6 +1201,13 @@ async def lathe_setup(params: SetupInput) -> str:
         "  on branch %s" % commit.branch,
         "",
     ]
+    if not a.get("blender_ok", True):
+        # The generated program tries a bevel and falls back to the plain piece
+        # when it cannot, which is right for the piece and must not be silent:
+        # it is the only sign the bevel was never attempted.
+        out.append("  ! no bevel: bevel needs Blender, which was not found. This "
+                   "piece is unbeveled. Set LATHE_BLENDER or put Blender on PATH, "
+                   "then lathe_apply the program again.")
     for note in commit.bevel_notes:
         head, _, tail = note.partition("\n")
         out.append("  ! %s" % head)
