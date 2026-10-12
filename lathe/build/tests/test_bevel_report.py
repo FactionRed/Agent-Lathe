@@ -80,6 +80,26 @@ class TestDeliveredWidths(unittest.TestCase):
                (0.3, 0.3, 0), (0.0, 0.9, 0)]
         self.assertAlmostEqual(_measure(top, FRONT_03, 0.3), 0.3, places=9)
 
+    def test_a_tilted_boundary_on_a_merged_nonplanar_face_is_read_at_mid_edge(self):
+        """bmesh merges faces across up to 1 degree, so the polygon is not planar
+        and its boundary line is tilted against the edge. The bowl rim read 0.14%
+        short from the segment ends, and went unmeasured under a tight parallel
+        test. The offset at the middle of the edge is the width."""
+        # Line from s=0.2994 at x=0 to s=0.3006 at x=1, lifted 0.01 off the plane
+        # at one end (so the face is visibly not planar).
+        top = [(0.0, 0.2994, 0.0), (1.0, 0.3006, 0.01), (1.0, 0.9, 0.0),
+               (0.0, 0.9, 0.0)]
+        self.assertAlmostEqual(_measure(top, FRONT_03, 0.3), 0.3, delta=2e-4)
+
+    def test_a_planar_face_gets_no_slack_for_a_stray_segment(self):
+        """The slack is for faces that are not planar. On a planar one, a long
+        segment 1.5 degrees off the edge is not its boundary line and must not be
+        measured as one (the chair read 0.51 mm for its 0.99 mm bevel)."""
+        sl = np.tan(np.radians(1.5))
+        top = [(0.05, 0.10, 0), (0.90, 0.10 + 0.85 * sl, 0), (0.7, 0.3, 0),
+               (0.3, 0.3, 0)]
+        self.assertAlmostEqual(_measure(top, FRONT_03, 0.3), 0.3, places=9)
+
     def test_a_tiny_edge_falls_back_to_the_corner_vertex(self):
         """No parallel segment exists when the edge is shorter than the bevel:
         the neighbours boundary lines meet in a point, and that is the width."""

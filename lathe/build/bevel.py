@@ -41,9 +41,11 @@ _CANDIDATES = [
 ]
 
 
-# A delivered width this close to the request counts as delivered. The measured
-# error on exact results is ~1e-7 relative; a clamp that matters is far above this.
-WIDTH_TOLERANCE = 1e-3
+# A delivered width this close to the request counts as delivered. Exact results
+# measure to ~1e-7, but a face bmesh merged across up to coplanar_deg (1 degree)
+# is not planar, so its outline is tilted against the edge and reads up to ~0.3%
+# off. A clamp that matters is far above this: the smallest seen is 1%.
+WIDTH_TOLERANCE = 5e-3
 
 
 @dataclass(frozen=True)
@@ -231,15 +233,30 @@ def delivered_widths(edges: np.ndarray, side_verts: np.ndarray,
             t2, s2 = np.roll(t, -1), np.roll(s, -1)
             seg = np.roll(vs, -1, axis=0) - vs
             seg_len = np.linalg.norm(seg, axis=1)
-            # Parallel to the edge, within the float32 the coordinates carry.
+            # Parallel to the edge. Tight on a planar face. A face bmesh merged
+            # across up to coplanar_deg is not planar, and its boundary line is
+            # tilted against the edge by up to about a degree: it gets the slack,
+            # and only it, so a planar face cannot lend a stray segment.
+            n_k = edges[e, 2 + 2 * k]
+            size = float(np.linalg.norm(vs.max(axis=0) - vs.min(axis=0)))
+            planar = float(np.abs(rel @ n_k).max()) <= 1e-4 * size + 8.0 * noise
+            slack = 1e-4 if planar else 0.03
             cross = np.linalg.norm(np.cross(seg, dh), axis=1)
-            parallel = (seg_len > floor) & (cross <= 1e-4 * seg_len + 8.0 * noise)
-            overlap = (np.minimum(t, t2) <= length + noise) &                       (np.maximum(t, t2) >= -noise)
-            soff = 0.5 * (s + s2)
-            ok = parallel & overlap & (soff > floor) & (soff <= cap)
-            if ok.any():
-                sides.append(float(soff[ok].min()))
-                continue
+            parallel = (seg_len > floor) & (cross <= slack * seg_len + 8.0 * noise)
+            lo_t, hi_t = np.minimum(t, t2), np.maximum(t, t2)
+            reach = np.minimum(hi_t, length) - np.maximum(lo_t, 0.0)
+            overlaps = parallel & (reach > -noise)
+            if overlaps.any():
+                # The offset where the segment crosses the middle of the edge.
+                tm = np.clip(0.5 * length, lo_t, hi_t)
+                span = t2 - t
+                moving = np.abs(span) > 1e-18
+                frac = np.where(moving, (tm - t) / np.where(moving, span, 1.0), 0.0)
+                soff = s + frac * (s2 - s)
+                ok = overlaps & (soff > floor) & (soff <= cap)
+                if ok.any():
+                    sides.append(float(soff[ok].min()))
+                    continue
             near = (t >= -noise) & (t <= length + noise) & (s > floor) & (s <= cap)
             if near.any():
                 sides.append(float(s[near].min()))
