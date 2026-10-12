@@ -14,7 +14,7 @@ python models/build_all.py --no-render  # skip Blender, keep the checks
 | Asset | Tris | Components | Verifier | Build |
 |---|---|---|---|---|
 | `SM_Chair_Oak_LOD0` | 2,324 | 1 | PASS — 0 error, 0 warn, 0 note | 2.6 s |
-| `SM_BowlFruit_Ceramic_LOD0` | 5,848 | 1 | PASS — 0 error, 0 warn, 0 note | 2.8 s |
+| `SM_BowlFruit_Ceramic_LOD0` | 5,588 | 1 | PASS — 0 error, 0 warn, 0 note | 2.8 s |
 | `SM_Villager_Stylized_LOD0` | 2,446 | 1 | PASS — 0 error, 0 warn, 0 note | <0.1 s |
 
 All three are watertight, manifold, stand on z=0, and are centred on their
@@ -73,10 +73,10 @@ what ships in an engine. Two scripts because they answer different questions.
 | Asset | Low | High | Ratio | Effect |
 |---|---|---|---|---|
 | chair | **308** tris | 2,324 | 7.55:1 | W302 from 202% off target to 17% |
-| bowl | 4,822 tris | 5,848 | 1.21:1 | essentially none |
+| bowl | 4,822 tris | 5,588 | 1.16:1 | essentially none |
 
 **Baking helps in proportion to how much of the mesh the detail was.** The chair's bevel was
-87% of its triangles, so moving it into a normal map is transformative. The bowl's was 18%, so
+87% of its triangles, so moving it into a normal map is transformative. The bowl's was 14%, so
 it barely moves — and the bowl's density problems were never the bevel. They come from the
 pole triangles of its spheres and revolves, which no amount of baking addresses.
 

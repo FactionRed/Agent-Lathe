@@ -40,7 +40,7 @@ reasons rather than prompt-quality ones.
 | Asset | Tris | Verifier |
 |---|---|---|
 | `SM_Chair_Oak_LOD0` | 2,324 | PASS — 0 error, 0 warn, 0 note |
-| `SM_BowlFruit_Ceramic_LOD0` | 5,848 | PASS — 0 error, 0 warn, 0 note |
+| `SM_BowlFruit_Ceramic_LOD0` | 5,588 | PASS — 0 error, 0 warn, 0 note |
 | `SM_Villager_Stylized_LOD0` | 2,446 | PASS — 0 error, 0 warn, 0 note |
 
 - Authoring kernel: primitives, booleans, revolve, extrude, arrays, transforms.

@@ -641,7 +641,7 @@ and do not sell character work in Phase 1–4.
 bevel into a normal map, which is the production answer to the W302 spread above. It worked
 spectacularly on one asset and did nothing for another, and the difference is instructive: the
 chair's bevel was 87% of its triangles, so the low poly is 308 against 2,324 and the density
-spread falls from 202% off target to 17%. The bowl's bevel was 18%, so its low poly is 82% of
+spread falls from 202% off target to 17%. The bowl's bevel was 14%, so its low poly is 86% of
 the original and the warning is unchanged — because that asset's density problem was never the
 bevel. It is the pole triangles of its spheres and revolves.
 
@@ -863,6 +863,19 @@ system adoptable before it is trusted.
 
    It is checked against the referee: bevelling again with `clamp=False` at the reported
    width gives the same solid. The delivery gap itself stays pinned as an `expectedFailure`.
+
+   *Found later: the merge that precedes the bevel chained.* bmesh bevels a triangulated cube
+   along its diagonals unless coplanar triangles are merged first, and the worker merged any
+   adjacent pair within `coplanar_deg` (1°). On a surface sampled finer than that, every pair
+   is within a degree, so a whole dome chained into one polygon: an arc sampled every 0.9° came
+   out of `bevel()` a flat disc (16 mm tall to 4 mm, 39% of the volume), reported "delivered on
+   all 96 edges", verifier PASS. The referee above could not have seen it: its fixtures are
+   sampled at 7.5°. Regions now grow from a seed face and admit a neighbour only within
+   `coplanar_deg` of the *seed*, so a merged face cannot bend further than that; a 400-facet
+   cylinder that used to deliver 0.39 mm of 5 mm now delivers it. And `bevel()` refuses a
+   result whose bounding box shrank by a quarter, or that kept under a quarter of the volume,
+   because a silent collapse is worse than an error. (Volume alone cannot tell it from a
+   cube with an oversize width, which is a legitimate 41%; the box leads.)
 
    *Not done.* OCCT was not re-run on curved input, so the *comparison* that §11 rests on is
    still one-sided: bmesh is now known to be good on curved input, not known to be better
