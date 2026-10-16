@@ -103,6 +103,9 @@ class Solid:
     uv: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     uv_set: str = "UV0"
     _mesh: Optional[pmesh.Mesh] = field(default=None, compare=False, repr=False)
+    # What bevel() measured about the Solid it returned (a bevel.BevelReport).
+    # Not carried through later operations: it describes that one bevel.
+    bevel_report: Optional[object] = field(default=None, compare=False, repr=False)
 
     # -- lifting -----------------------------------------------------------
 

@@ -15,12 +15,15 @@ with every triangle still attributable.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import shutil
 import subprocess
 import tempfile
-from typing import Optional, Sequence
+from dataclasses import dataclass
+from typing import List, Optional, Sequence
 
 import numpy as np
 
@@ -36,6 +39,232 @@ _CANDIDATES = [
     "/Applications/Blender.app/Contents/MacOS/Blender",
     "/usr/bin/blender",
 ]
+
+
+# A delivered width this close to the request counts as delivered. Exact results
+# measure to ~1e-7, but a face bmesh merged across up to coplanar_deg (1 degree)
+# is not planar, so its outline is tilted against the edge and reads up to ~0.3%
+# off. A clamp that matters is far above this: the smallest seen is 1%.
+WIDTH_TOLERANCE = 5e-3
+
+
+@dataclass(frozen=True)
+class BevelReport:
+    """What bevel() actually did, as opposed to what it was asked.
+
+    `width` is a ceiling when clamp is on: bmesh shrinks the bevel where it fears
+    overlap, by an amount that depends on incidental geometry, and says nothing.
+    Measured on curved input an 8 mm request delivered 3.4 to 7.6 mm and the
+    Solid came back valid, correctly tagged and 41% off in bevel area.
+    DESIGN.md section 14.7.
+
+    An edge the measurement could not read is neither delivered nor short, and
+    counting it as either is how the first version reported 99.94 mm delivered
+    for a 5 mm request. It is `unmeasured`, and a report with any is not `ok`.
+    """
+
+    requested: float          # metres
+    edges: int                # edges the predicate selected
+    short: int                # measured edges that got less than `requested`
+    min_delivered: float      # metres; worst measured edge (nan if none)
+    max_delivered: float      # metres; best measured edge (nan if none)
+    clamp: bool
+    unmeasured: int = 0       # edges whose delivered width could not be read
+
+    @property
+    def clamped(self) -> bool:
+        return self.short > 0
+
+    @property
+    def ok(self) -> bool:
+        """Every edge measured, and every one delivered in full."""
+        return self.short == 0 and self.unmeasured == 0
+
+    def describe(self) -> str:
+        mm = lambda v: "%.3g mm" % (v * 1000.0)
+        measured = self.edges - self.unmeasured
+        if self.ok:
+            return ("bevel: %s requested, delivered on all %d edges"
+                    % (mm(self.requested), self.edges))
+        parts = []
+        if self.short:
+            lo = 100.0 * self.min_delivered / self.requested if self.requested else 0.0
+            parts.append("%d of %d edges came out short, the worst at %s (%.0f%%)"
+                         % (self.short, self.edges, mm(self.min_delivered), lo))
+        elif measured:
+            parts.append("delivered on the %d edges it could measure" % measured)
+        if self.unmeasured:
+            parts.append("%d of %d edges could not be measured"
+                         % (self.unmeasured, self.edges))
+        return "bevel: %s requested; %s" % (mm(self.requested), "; ".join(parts))
+
+    def advice(self) -> str:
+        out = []
+        if self.clamped:
+            if self.clamp:
+                out.append(
+                    "bmesh clamps the width where it fears overlap, by an amount "
+                    "that depends on incidental geometry. clamp=False delivers the "
+                    "width exactly and raises if the result is not a valid "
+                    "manifold; a smaller width is the other way out.")
+            else:
+                out.append(
+                    "clamp was off, so a short edge here is not bmesh's clamp: the "
+                    "geometry could not take the width. Try a smaller one.")
+        if self.unmeasured:
+            out.append(
+                "An unmeasured edge sits beside a face too small or too noisy to "
+                "find the bevel boundary on. That is not a pass: check the width "
+                "by eye, or bevel with a width the smallest face can take.")
+        return " ".join(out)
+
+
+_SINK: "contextvars.ContextVar[Optional[List[BevelReport]]]" = contextvars.ContextVar(
+    "lathe_bevel_reports", default=None)
+
+
+@contextlib.contextmanager
+def collecting_reports():
+    """Gather the BevelReport of every bevel() called inside the block.
+
+    The result Solid of a program is usually *not* the bevel's own, since a
+    boolean or a transform comes after, so a report that only rode on the
+    returned Solid would be gone by the time anyone could read it. A context
+    variable, not a global: lathe_apply runs programs on worker threads, and
+    asyncio.to_thread copies the context.
+    """
+    sink: List[BevelReport] = []
+    token = _SINK.set(sink)
+    try:
+        yield sink
+    finally:
+        _SINK.reset(token)
+
+
+def _recentre_origin(verts: np.ndarray) -> np.ndarray:
+    """The point to subtract before the mesh goes to Blender's float32.
+
+    Zero for anything near the origin, so ordinary models are untouched: a face
+    on z = 0 stays exactly there, which origin checks and exact-comparison tests
+    rely on. Only a model far from the origin, where float32 has already lost the
+    bevel, is moved, and then by a multiple of a power of two sized to the model,
+    so that subtracting it and adding it back is exact in float64.
+    """
+    lo, hi = verts.min(axis=0), verts.max(axis=0)
+    centre = 0.5 * (lo + hi)
+    extent = max(float(np.max(hi - lo)), 1e-9)
+    if float(np.max(np.abs(centre))) <= 4.0 * extent:
+        return np.zeros(3)
+    quantum = 2.0 ** np.floor(np.log2(extent / 1024.0))
+    return np.round(centre / quantum) * quantum
+
+
+def _noise_floor(maxabs: float) -> float:
+    """How far a vertex can sit from where it should, from float32 alone.
+
+    Blender stores coordinates as float32 (half an ulp is 2**-24 relative) and the
+    bevel arithmetic compounds that, so 64 half-ulps of the largest coordinate
+    is allowed. The caller recentres the mesh first, so `maxabs` is the model's
+    size, not its distance from the origin.
+    """
+    return 64.0 * 2.0 ** -24 * max(float(maxabs), 1e-9)
+
+
+def delivered_widths(edges: np.ndarray, side_verts: np.ndarray,
+                     side_off: np.ndarray, width: float) -> np.ndarray:
+    """Width delivered along each picked edge.
+
+    `edges` is the worker's (m, 6, 3): for each picked edge its two endpoints,
+    then (face normal, direction into the face) for each adjacent face, all
+    measured before the bevel. `side_verts` and `side_off` are, for each edge's
+    two sides in order, the vertices of the polygon that face became, in loop
+    order.
+
+    A bevel shrinks each adjacent face to a smaller polygon. Along the old edge
+    its outline is a segment *parallel* to the edge, `delivered` away: that
+    offset is the width on that side, and an edge's width is the smaller of its
+    two sides.
+
+    Parallel segments, because the outline is not only that. At a corner the
+    face's outline follows the vertex patch's arc, which comes within half a
+    width of the edge's end: the nearest outline point read the chair's exact
+    0.99 mm bevel as 0.41 mm. Overlapping the edge's extent, because where the
+    face turns away from the edge the boundary line runs past its ends. A face
+    whose edge is shorter than the bevel has no such segment, only the corner
+    where its neighbours' lines meet; that vertex is the fallback.
+
+    A side whose polygon is gone, or has nothing in range, is NaN: not zero and
+    not the request. An unmeasured edge is its own state (see BevelReport),
+    because reading 0.05 mm as "99.94 mm delivered" is the failure this function
+    exists to prevent.
+
+    Linear in the mesh: per edge the cost is the size of two polygons. The first
+    version tested every output vertex against every edge, 52 s at 32k vertices.
+
+    Returns metres, one per edge, NaN where the width could not be read.
+    """
+    m = len(edges)
+    out = np.full(m, np.nan, dtype=np.float64)
+    if m == 0:
+        return out
+    sv = np.asarray(side_verts, dtype=np.float64).reshape(-1, 3)
+    off = np.asarray(side_off, dtype=np.int64)
+    maxabs = float(np.abs(edges[:, :2]).max())
+    if len(sv):
+        maxabs = max(maxabs, float(np.abs(sv).max()))
+    noise = _noise_floor(maxabs)
+    cap = float(width) * (1.0 + WIDTH_TOLERANCE) + noise
+    floor = 4.0 * noise
+    for e in range(m):
+        a, b = edges[e, 0], edges[e, 1]
+        d = b - a
+        length = float(np.linalg.norm(d))
+        if length <= 1e-12:
+            continue
+        dh = d / length
+        sides = []
+        for k in (0, 1):
+            vs = sv[off[2 * e + k]:off[2 * e + k + 1]]
+            if len(vs) < 2:
+                break
+            u = edges[e, 3 + 2 * k]
+            rel = vs - a
+            t, s = rel @ dh, rel @ u
+            t2, s2 = np.roll(t, -1), np.roll(s, -1)
+            seg = np.roll(vs, -1, axis=0) - vs
+            seg_len = np.linalg.norm(seg, axis=1)
+            # Parallel to the edge. Tight on a planar face. A face bmesh merged
+            # across up to coplanar_deg is not planar, and its boundary line is
+            # tilted against the edge by up to about a degree: it gets the slack,
+            # and only it, so a planar face cannot lend a stray segment.
+            n_k = edges[e, 2 + 2 * k]
+            size = float(np.linalg.norm(vs.max(axis=0) - vs.min(axis=0)))
+            planar = float(np.abs(rel @ n_k).max()) <= 1e-4 * size + 8.0 * noise
+            slack = 1e-4 if planar else 0.03
+            cross = np.linalg.norm(np.cross(seg, dh), axis=1)
+            parallel = (seg_len > floor) & (cross <= slack * seg_len + 8.0 * noise)
+            lo_t, hi_t = np.minimum(t, t2), np.maximum(t, t2)
+            reach = np.minimum(hi_t, length) - np.maximum(lo_t, 0.0)
+            overlaps = parallel & (reach > -noise)
+            if overlaps.any():
+                # The offset where the segment crosses the middle of the edge.
+                tm = np.clip(0.5 * length, lo_t, hi_t)
+                span = t2 - t
+                moving = np.abs(span) > 1e-18
+                frac = np.where(moving, (tm - t) / np.where(moving, span, 1.0), 0.0)
+                soff = s + frac * (s2 - s)
+                ok = overlaps & (soff > floor) & (soff <= cap)
+                if ok.any():
+                    sides.append(float(soff[ok].min()))
+                    continue
+            near = (t >= -noise) & (t <= length + noise) & (s > floor) & (s <= cap)
+            if near.any():
+                sides.append(float(s[near].min()))
+                continue
+            break
+        if len(sides) == 2:
+            out[e] = min(sides)
+    return out
 
 
 def blender_path() -> Optional[str]:
@@ -68,11 +297,22 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
     `width` is the distance from the edge along each adjacent face. With
     clamp=True, the default, it is a *ceiling*, not a promise: bmesh shrinks the
     bevel where it fears overlap, by an amount that depends on incidental
-    geometry, and the returned Solid does not say it did. Measured on curved
-    input an 8 mm request delivered 3.4 to 7.6 mm. clamp=False delivers the
-    width exactly and raises if the result is not a valid manifold, but cannot
-    promise the surface does not fold over itself. DESIGN.md section 14.7.
+    geometry. Measured on curved input an 8 mm request delivered 3.4 to 7.6 mm.
+    The returned Solid's `bevel_report` says what was delivered (and on how many
+    edges that could not be read), and lathe_apply prints it when it is not ok. clamp=False delivers the width exactly and
+    raises if the result is not a valid manifold, but cannot promise the surface
+    does not fold over itself. DESIGN.md section 14.7.
     """
+    # Arguments before the environment, and before the work. A width of zero, a
+    # negative one or NaN used to run, change nothing, and be reported as
+    # delivered; a non-finite width reached bmesh itself.
+    if not (isinstance(width, (int, float)) and np.isfinite(width) and width > 0):
+        raise LatheError(
+            "bevel width must be a positive, finite length in metres, got %r. "
+            "`mm(2)` is 2 mm." % (width,))
+    if int(segments) < 1:
+        raise LatheError("bevel segments must be at least 1, got %r" % (segments,))
+
     exe = blender_path()
     if exe is None:
         raise LatheError(
@@ -100,7 +340,13 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
         in_p = os.path.join(tmp, "in.npz")
         out_p = os.path.join(tmp, "out.npz")
         par_p = os.path.join(tmp, "params.json")
-        np.savez(in_p, verts=msh.verts, tris=msh.tris, part_id=msh.part_id)
+        # Blender holds float32. A model 1 km from the origin has 0.1 mm of
+        # coordinate noise before anything happens, and 100 km loses the bevel
+        # altogether (volume -20%, reported delivered). So the worker sees the
+        # model centred, and the result is put back in float64.
+        origin = _recentre_origin(msh.verts)
+        np.savez(in_p, verts=msh.verts - origin, tris=msh.tris,
+                 part_id=msh.part_id)
         json.dump({
             "width": float(width), "segments": int(segments),
             "min_dihedral": float(min_dihedral), "max_dihedral": float(max_dihedral),
@@ -137,10 +383,27 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
                    list(only_tags) if only_tags else "any",
                    report["in_tris"], report.get("faces_after_dissolve", -1)))
 
-        man = _tagged_manifold(res["verts"], res["tris"], res["part_id"])
+        centred = np.asarray(res["verts"], dtype=np.float64)
+        man = _tagged_manifold(centred + origin, res["tris"], res["part_id"])
         tags = dict(solid.tags)
         tags[int(bevel_id)] = new_tag
         out = Solid(man, tags, solid.name)
+        rep = None
+        if "picked_edges" in res.files and len(res["picked_edges"]):
+            got = delivered_widths(res["picked_edges"], res["side_verts"],
+                                   res["side_off"], float(width))
+            seen = np.isfinite(got)
+            short = seen & (got < float(width) * (1.0 - WIDTH_TOLERANCE))
+            rep = BevelReport(
+                requested=float(width), edges=int(len(got)),
+                short=int(short.sum()),
+                min_delivered=float(got[seen].min()) if seen.any() else float("nan"),
+                max_delivered=float(got[seen].max()) if seen.any() else float("nan"),
+                clamp=bool(clamp), unmeasured=int((~seen).sum()))
+            object.__setattr__(out, "bevel_report", rep)
+            sink = _SINK.get()
+            if sink is not None:
+                sink.append(rep)
         if not out.status_ok():
             raise LatheError(
                 "bevel on %s produced %s. Width %g is probably too large for the "

@@ -20,10 +20,10 @@ What is pinned here is what was MEASURED, not what would be nice:
   * Geometry is exact to ~1e-7 whenever the requested width is delivered.
   * At a corner that is not a right angle, profile=0.5 is an ellipse, not a
     circular fillet. Same endpoints, different curve.
-  * With clamp=True, the default, the width delivered is silently less than the
-    width asked for, by an amount that depends on incidental geometry. The
-    expectedFailure below is that gap, written down so it flips loudly when it
-    is closed.
+  * With clamp=True, the default, the width delivered is less than the width
+    asked for, by an amount that depends on incidental geometry. bevel() now
+    reports it (test_bevel_report.py); the expectedFailure below is the
+    *delivery* gap, written down so it flips loudly if it is ever closed.
 """
 
 import math
@@ -269,16 +269,18 @@ class TestBevelOnCurvedInput(unittest.TestCase):
         self.assertGreater(circle.unmatched, 0)
 
     def test_default_clamp_under_delivers_the_width_on_a_step(self):
-        """The characterisation of the gap: asked for 8 mm, got less, no signal.
+        """The characterisation of the gap: asked for 8 mm, got less.
 
         On this fixture the clamped bevel is valid, one component, correctly
-        tagged -- and the area it removes is off by 41%. A caller has no way to
-        see that from the returned Solid.
+        tagged -- and the area it removes is off by 41%. Nothing about the Solid
+        itself shows it; bevel_report is what says so (test_bevel_report.py).
         """
         out, g = self.step_clamped
         self.assertTrue(out.status_ok())
         self.assertEqual(out.components(), 1)
         self.assertGreater(abs(g.rel_area_error("bevel")), 0.05)
+        self.assertTrue(out.bevel_report.clamped,
+                        "the shortfall is real and must be reported")
 
     def test_default_clamp_under_delivers_on_a_bowl_rim_too(self):
         out, g = self.bowl_clamped
