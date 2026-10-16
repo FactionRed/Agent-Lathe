@@ -57,7 +57,7 @@ reasons rather than prompt-quality ones.
   layouts rather than reporting *not checked*.
 - High-to-low baking of normal and AO maps, with cage extrusion derived from the subject's own
   size and Flip Y switched by target engine. Moves a bevel out of geometry and into texture:
-  the chair drops from 2,324 triangles to **308**, and its density spread from 418% off target
+  the chair drops from 2,324 triangles to **308**, and its density spread from 202% off target
   to 17%.
 - Perception: Tier 1 probes and Tier 2 structural summaries, both Blender-optional.
 - Renderer: shaded contact sheets, silhouette mattes, wireframe overlays.

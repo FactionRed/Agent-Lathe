@@ -633,7 +633,7 @@ and do not sell character work in Phase 1–4.
 bevel into a normal map, which is the production answer to the W302 spread above. It worked
 spectacularly on one asset and did nothing for another, and the difference is instructive: the
 chair's bevel was 87% of its triangles, so the low poly is 308 against 2,324 and the density
-spread falls from 418% off target to 17%. The bowl's bevel was 18%, so its low poly is 82% of
+spread falls from 202% off target to 17%. The bowl's bevel was 18%, so its low poly is 82% of
 the original and the warning is unchanged — because that asset's density problem was never the
 bevel. It is the pole triangles of its spheres and revolves.
 
@@ -818,7 +818,15 @@ system adoptable before it is trusted.
    anywhere overlaps, so a single thin feature shrinks every bevel on the model, and every
    edge reports the same shortfall (192 of 192 here). That also explains the
    non-monotonicity: the width is a minimum over the whole body, not a property of any edge.
-   The shipped chair was hit by it: its 2 mm bevel delivers 0.99 mm on all 204 edges.
+   The shipped chair was hit by it: its 2 mm bevel delivered 0.99 mm on all 204 edges, and
+   had for as long as it existed. It is fixed in `models/chair.py` by bevelling unclamped,
+   under a guard that raises if any edge is not verified at full width; the chair's smallest
+   features take about 4 mm, and a 6 mm bevel trips the guard. The geometry did not change.
+   (An earlier version of that fix lowered the stile tops, on the strength of a width
+   estimator that read exact bevels as short; the estimator was the defect. See below.)
+   The 2 mm bevel is twice what the chair used to carry, so the figures that quote it were
+   re-measured: the high poly's density spread was 418% off target at a 0.99 mm bevel and is
+   202% at 2 mm.
 
    *Decision: report, do not flip the default.* `clamp=False` can fold the surface over
    itself on a genuinely too-large width, and no referee has a closed form for that, so

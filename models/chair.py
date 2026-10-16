@@ -104,9 +104,24 @@ def build(seat_h=0.45, seat_w=0.42, seat_d=0.40, leg=0.040, slat_n=3,
     # Bevel every sharp edge. Real timber has no zero-radius arris, and the
     # wrapper enforces the non-inheriting tag default, so the assertions above
     # still hold afterwards.
+    #
+    # clamp=False, and the check after it, are deliberate. With the default clamp
+    # a 2 mm request delivered 0.99 mm on all 204 edges and said nothing: bmesh
+    # sizes one width for the whole body from its worst joint. This chair is
+    # axis-aligned boxes with no feature under 4 mm, which an unclamped 2 mm bevel
+    # cannot fold over (measured: it delivers 2.00 mm on all 204 edges, and the
+    # verifier is clean). The report is what makes that safe to assume rather
+    # than hope: widen the bevel past about 4 mm, or thin a part, and this raises
+    # instead of shipping a bevel narrower than its parameter.
     if bevel:
         chair = L.bevel(chair, width=bevel_w, segments=2, min_dihedral=55,
-                        min_length=mm(4))
+                        min_length=mm(4), clamp=False)
+        rep = chair.bevel_report
+        if rep is not None and not rep.ok:
+            raise L.LatheError(
+                "the chair's %.2f mm bevel is not verified at full width: %s. "
+                "Its smallest features take about 4 mm; widen a part, or narrow "
+                "bevel_w." % (bevel_w * 1000, rep.describe()))
     return chair
 
 

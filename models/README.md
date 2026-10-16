@@ -72,7 +72,7 @@ what ships in an engine. Two scripts because they answer different questions.
 
 | Asset | Low | High | Ratio | Effect |
 |---|---|---|---|---|
-| chair | **308** tris | 2,324 | 7.55:1 | W302 from 418% off target to 17% |
+| chair | **308** tris | 2,324 | 7.55:1 | W302 from 202% off target to 17% |
 | bowl | 4,822 tris | 5,848 | 1.21:1 | essentially none |
 
 **Baking helps in proportion to how much of the mesh the detail was.** The chair's bevel was
