@@ -280,16 +280,18 @@ class Workspace:
         is usually a boolean or a transform downstream of the bevel, and a report
         that only rode on the bevel's own Solid would be gone by then.
         """
+        lang_notes: Tuple[str, ...] = ()
         with collecting_reports() as reports:
             if language == "lathe":
-                solid, spec = self._run_lathe(program)
+                solid, spec, lang_notes = self._run_lathe(program)
             else:
                 solid, spec = self._run_python(program)
-        notes = tuple(
+        notes = lang_notes + tuple(
             r.describe() + "\n" + r.advice() for r in reports if not r.ok)
         return solid, spec, notes
 
-    def _run_lathe(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
+    def _run_lathe(self, program: str
+                   ) -> Tuple[Solid, Dict[str, Any], Tuple[str, ...]]:
         """Parse and walk a .lathe program. No exec, no builtins, no imports."""
         from ..lang import interp as L
         from ..lang.syntax import LatheSyntaxError
@@ -308,7 +310,8 @@ class Workspace:
                 "%s while evaluating the .lathe program: %s"
                 % (type(exc).__name__, exc)) from None
         _require_body(solid)
-        return solid, spec_from_emit(it.emit_options)
+        notes = tuple("%s\n%s" % (head, advice) for head, advice in it.notes)
+        return solid, spec_from_emit(it.emit_options), notes
 
     def _run_python(self, program: str) -> Tuple[Solid, Dict[str, Any]]:
         ns = _api_namespace()

@@ -288,11 +288,17 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
           max_dihedral: float = 180.0, min_length: float = 0.0,
           only_tags: Optional[Sequence[str]] = None, new_tag: str = "bevel",
           profile: float = 0.5, clamp: bool = True, coplanar_deg: float = 1.0,
-          verbose: bool = False) -> Solid:
+          verbose: bool = False, edges: Optional[Selection] = None) -> Solid:
     """Round the edges matching the predicate. Returns a new Solid.
 
     only_tags restricts the bevel to edges whose *both* faces carry one of those
     tags, which is how you bevel a seat without touching the legs.
+
+    `edges` is an edge Selection taken from this same solid, and then those edges
+    are exactly the ones beveled: the dihedral, length and tag predicates are the
+    selection's own and are not applied again. Without it the predicates here pick.
+    (The .lathe language used to recover only a selection's dihedral threshold, so
+    `bevel(carved, rim)` beveled every edge over it, whatever else `rim` said.)
 
     `width` is the distance from the edge along each adjacent face. With
     clamp=True, the default, it is a *ceiling*, not a promise: bmesh shrinks the
@@ -322,6 +328,25 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
     if msh.part_id is None:
         raise LatheError("bevel needs part ids; %s has none" % solid.name)
 
+    only_pairs = None
+    if edges is not None:
+        if getattr(edges, "domain", None) != "edges":
+            raise LatheError("bevel(edges=) needs an edge selection, got %r"
+                             % (edges,))
+        src = edges.solid.mesh()
+        if (src.verts.shape != msh.verts.shape or src.tris.shape != msh.tris.shape
+                or not np.array_equal(src.verts, msh.verts)
+                or not np.array_equal(src.tris, msh.tris)):
+            raise LatheError(
+                "the edge selection %s belongs to a different solid than the one "
+                "being beveled (%s). Select the edges on the solid you bevel."
+                % (edges.expr, solid.name))
+        if len(edges.indices) == 0:
+            raise LatheError(
+                "bevel selected no edges on %s: the selection %s is empty. Loosen "
+                "its predicates." % (solid.name, edges.expr))
+        only_pairs = np.asarray(src.topology.edges, dtype=np.int64)[edges.indices]
+
     only_parts = None
     if only_tags is not None:
         wanted = set(only_tags)
@@ -345,8 +370,11 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
         # altogether (volume -20%, reported delivered). So the worker sees the
         # model centred, and the result is put back in float64.
         origin = _recentre_origin(msh.verts)
-        np.savez(in_p, verts=msh.verts - origin, tris=msh.tris,
-                 part_id=msh.part_id)
+        arrays = dict(verts=msh.verts - origin, tris=msh.tris,
+                      part_id=msh.part_id)
+        if only_pairs is not None:
+            arrays["only_pairs"] = only_pairs
+        np.savez(in_p, **arrays)
         json.dump({
             "width": float(width), "segments": int(segments),
             "min_dihedral": float(min_dihedral), "max_dihedral": float(max_dihedral),

@@ -30,9 +30,21 @@ def main():
     tris = data["tris"]
     part_id = data["part_id"]
 
+    only_pairs = None
+    if "only_pairs" in data.files:
+        only_pairs = {(int(min(a, b)), int(max(a, b)))
+                      for a, b in data["only_pairs"]}
+
     bm = bmesh.new()
+    # The input vertex index, kept on the vertex so an edge can be named by it
+    # after the coplanar merge has rebuilt the faces around it. The layer comes
+    # first: adding one after the vertices exist reallocates them and every
+    # reference in `bverts` dies ("BMVert has been removed").
+    vid_lay = bm.verts.layers.int.new("lathe_vid")
     bverts = [bm.verts.new((float(x), float(y), float(z))) for x, y, z in verts]
     bm.verts.ensure_lookup_table()
+    for i, bv in enumerate(bverts):
+        bv[vid_lay] = i
     lay = bm.faces.layers.int.new(TAG_LAYER)
     for t, pid in zip(tris, part_id):
         f = bm.faces.new((bverts[int(t[0])], bverts[int(t[1])], bverts[int(t[2])]))
@@ -112,6 +124,12 @@ def main():
     picked = []
     for e in bm.edges:
         if len(e.link_faces) != 2:
+            continue
+        if only_pairs is not None:
+            # The program named these edges; its predicates already ran.
+            a, b = e.verts[0][vid_lay], e.verts[1][vid_lay]
+            if (min(a, b), max(a, b)) in only_pairs:
+                picked.append(e)
             continue
         ang = e.calc_face_angle(0.0)
         if not (min_d < ang < max_d):
