@@ -344,11 +344,23 @@ def e103(ctx):
 def e105(ctx):
     """Geometry that contributes nothing and breaks things downstream: loose
     verts inflate the bbox, wire edges survive FBX export as renderable
-    curves, zero-area faces produce NaN tangents in a normal bake."""
+    curves, zero-area faces produce NaN tangents in a normal bake.
+
+    Two cases that look like a pass because nothing is *wrong* with any face: a
+    mesh with no faces at all, and a closed component that encloses no volume
+    (two coincident quads wound opposite ways pair every edge, so E101 is
+    satisfied, and neither has zero area). Both were reported PASS."""
     mesh, topo = ctx.mesh, ctx.topology
     min_area = float(ctx.p("min_face_area"))
     degenerate = topo.degenerate_faces(min_area)
-    if not (topo.loose_verts or topo.loose_wire_edges or degenerate):
+    empty = mesh.num_faces == 0
+    hollow = [] if empty else [
+        c for c in topo.components
+        if c.closed and abs(c.signed_volume) <= (
+            1e-6 * float(np.prod(c.extents)) + 1e-12 * max(c.extents) ** 3)
+    ]
+    if not (topo.loose_verts or topo.loose_wire_edges or degenerate
+            or empty or hollow):
         return
 
     wv = mesh.world_verts()
@@ -366,9 +378,20 @@ def e105(ctx):
             % (face_locator(mesh, fi), reason, num(area))
         )
 
+    for c in hollow[: ctx.p("max_report")]:
+        rows.append(
+            "%s encloses no volume: %d faces, extents %s m"
+            % (c.name, len(c.faces), " x ".join(num(e) for e in c.extents)))
+    if empty:
+        rows.append("the mesh has no faces (%d verts)" % mesh.num_verts)
+
     zero_area = [d for d in degenerate if "zero area" in d[2]]
     malformed = [d for d in degenerate if "zero area" not in d[2]]
     parts = []
+    if empty:
+        parts.append("no faces at all")
+    if hollow:
+        parts.append(plural(len(hollow), "closed component") + " enclosing no volume")
     if topo.loose_verts:
         parts.append(plural(len(topo.loose_verts), "loose vert"))
     if topo.loose_wire_edges:
@@ -415,9 +438,27 @@ def e105(ctx):
             ),
         )
 
+    bad_faces = [fi for fi, _, _ in degenerate] + [
+        fi for c in hollow for fi in c.faces]
+    if (empty or hollow) and not (loose or degenerate):
+        repair = Repair(
+            "assert",
+            (Raw("volume(%s) > 0" % mesh.name),),
+            statement=True,
+            alternatives=(
+                "mesh.delete_faces(%s, components = [%s])"
+                % (mesh.name, ", ".join(c.name for c in hollow)),
+            ) if hollow else (),
+            note=("an empty asset has nothing to verify; check the dimensions and "
+                  "any boolean that removed everything") if empty else
+            "back-to-back faces pair every edge but bound no volume: delete one "
+            "side, or give the sheet thickness",
+        )
     yield ctx.finding(
-        summary="Loose or degenerate geometry: " + ", ".join(parts),
-        entity=entity_for(mesh, [fi for fi, _, _ in degenerate]),
+        summary=("Empty or hollow geometry: " if (empty or hollow)
+                 and not (loose or degenerate)
+                 else "Loose or degenerate geometry: ") + ", ".join(parts),
+        entity=entity_for(mesh, bad_faces),
         where=[("items", rows)],
         evidence="%s; mesh has %d verts, %d faces%s"
         % (
@@ -433,6 +474,8 @@ def e105(ctx):
             "wire_edge_count": len(topo.loose_wire_edges),
             "zero_area_face_count": len(zero_area),
             "malformed_face_count": len(malformed),
+            "hollow_component_count": len(hollow),
+            "empty": bool(empty),
             "min_face_area": min_area,
             "loose_vert_locations": [list(map(float, wv[v])) for v in topo.loose_verts],
             "degenerate_faces": [
@@ -478,8 +521,11 @@ def e108(ctx):
         return
 
     total_tris = sum(c.tri_count for c in topo.components) or 1
-    biggest = max(topo.components, key=lambda c: c.tri_count)
-    share = biggest.tri_count / total_tris
+    # An empty mesh has no components and nothing to be the biggest of; the old
+    # code died here with "max() iterable argument is empty" and the caller saw
+    # "validation could not run" for the one asset that most needed a verdict.
+    biggest = max(topo.components, key=lambda c: c.tri_count, default=None)
+    share = biggest.tri_count / total_tris if biggest is not None else 0.0
     rows = [
         "%s  %d tris  %s m³  extents %s m"
         % (

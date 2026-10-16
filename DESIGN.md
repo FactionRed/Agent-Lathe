@@ -422,7 +422,15 @@ since a pure program is already a complete description of its geometry and repla
 what checkout means. One correction from building it: content-addressing on
 `(parent, program)` does **not** make a repeated program idempotent, because after a commit
 the tip is its own parent, so identical text addresses differently. The no-op check has to
-compare against the tip's text directly. A test caught that. Breadth is the thing agents are actually good at, and current
+compare against the tip's text directly. A test caught that. A second
+bug hunt found the rest of it. State changed *before* the program ran: a failing apply on a
+new branch left the branch and a moved head behind, and two programs running at once
+(`lathe_apply` runs them on worker threads) each re-read the head when they finished, so a
+slow call on one branch overlapping a fast call on another lost both commits. Commits now
+land under a lock and only on success, on the branch the call was sent to. Two smaller
+things came with it: a program that already existed as a commit on another branch never
+moved *this* branch onto it, and checking out a commit twice reset the branch it made and
+orphaned the work on top. Breadth is the thing agents are actually good at, and current
 tools tax it heavily.
 
 ## 9. Agent interface

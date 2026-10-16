@@ -129,9 +129,10 @@ class ApplyInput(BaseModel):
         default="", description="Short commit message, e.g. 'add top rail'",
         max_length=200)
     branch: Optional[str] = Field(
-        default=None,
-        description=("Branch to commit on. Creates it from the current tip if new. "
-                     "Omit to stay on the current branch."))
+        default=None, min_length=1, max_length=64,
+        description=("Branch to commit on. Creates it from the current tip if new, "
+                     "and only if the program succeeds. Omit to stay on the "
+                     "current branch. Letters, digits, '.', '_', '-', '/'."))
     language: Literal["auto", "lathe", "python"] = Field(
         default="auto",
         description=("'auto' reads the first statement: `param`/`let`/`emit`/`unit`/"
@@ -244,20 +245,24 @@ async def lathe_apply(params: ApplyInput) -> str:
         host objects, no imports and no builtins -- so it is the safer path.
     """
     try:
-        commit, solid, diff, is_new = await _off_loop(
+        res = await _off_loop(
             WS.apply, params.program, params.message, params.branch,
             params.language)
+        commit, solid, diff, is_new = res
     except Exception as exc:
         return _fail(exc)
 
     parts = []
-    if not is_new:
+    if not is_new and getattr(res, "moved", False):
+        parts.append("  branch %s moved onto %s: the same program on the same "
+                     "parent already existed as a commit" % (res.branch, commit.id))
+    elif not is_new:
         parts.append("  no change: this program on this parent is already %s"
                      % commit.id)
     parts.append(_headline(solid, commit))
     parts.append("  branch %s   parent %s   geometry %s   language %s"
-                 % (commit.branch, commit.parent or "(root)", commit.geom_hash,
-                    commit.language))
+                 % (getattr(res, "branch", commit.branch), commit.parent or "(root)",
+                    commit.geom_hash, commit.language))
     # A bevel that delivered less than it was asked for is valid, correctly
     # tagged and silent, which is the failure this surface exists to refuse.
     for note in commit.bevel_notes:
@@ -574,8 +579,9 @@ class BranchInput(BaseModel):
     """Input for lathe_branch."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    name: str = Field(..., description="New branch name, e.g. 'wider-seat'",
-                      min_length=1, max_length=80)
+    name: str = Field(..., description="New branch name, e.g. 'wider-seat'. "
+                      "Letters, digits, '.', '_', '-', '/'; not 'HEAD'.",
+                      min_length=1, max_length=64)
     from_ref: Optional[str] = Field(
         default=None, description="Commit or branch to branch from. Default HEAD.")
 
