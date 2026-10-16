@@ -50,14 +50,40 @@ def main():
     #    triangulation, and bevelling a triangulated cube would round the
     #    diagonals too. Only merge across edges whose faces share a part, so a
     #    cut face coplanar with a body face stays two distinct faces.
+    #
+    #    "Coplanar" is measured against the face a region GREW FROM, never against
+    #    the neighbour. Pairwise, a surface tessellated finer than coplanar_deg
+    #    chains: every adjacent pair is within a degree, so the whole dome merges
+    #    into one polygon, and a dome revolved from an arc sampled every 0.9
+    #    degrees came out of the bevel as a flat disc (volume 39%, height 16 mm
+    #    to 4 mm) reported as delivered. Against the seed, a region can never
+    #    bend more than coplanar_deg from where it started.
+    tol_cos = float(np.cos(np.radians(p.get("coplanar_deg", 1.0))))
+    cluster = {}
+    for seed_id, seed in enumerate(bm.faces):
+        if seed in cluster:
+            continue
+        cluster[seed] = seed_id
+        n0 = seed.normal.copy()
+        stack = [seed]
+        while stack:
+            f = stack.pop()
+            for e in f.edges:
+                if len(e.link_faces) != 2:
+                    continue
+                g = e.link_faces[1] if e.link_faces[0] is f else e.link_faces[0]
+                if g in cluster or g[lay] != seed[lay]:
+                    continue
+                if n0.dot(g.normal) < tol_cos:
+                    continue
+                cluster[g] = seed_id
+                stack.append(g)
     flat = []
     for e in bm.edges:
         if len(e.link_faces) != 2:
             continue
-        a, b = e.link_faces
-        if a[lay] != b[lay]:
-            continue
-        if e.calc_face_angle(0.0) < np.radians(p.get("coplanar_deg", 1.0)):
+        fa, fb = e.link_faces
+        if cluster[fa] == cluster[fb]:
             flat.append(e)
     if flat:
         # dissolve_edges, not dissolve_limit. dissolve_limit re-derives its own

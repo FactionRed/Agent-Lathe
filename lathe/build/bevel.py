@@ -404,6 +404,27 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
             sink = _SINK.get()
             if sink is not None:
                 sink.append(rep)
+        # A bevel removes a sliver along each edge. One that shrank the bounding
+        # box by a quarter, or left under a quarter of the volume, has not
+        # rounded anything: it has collapsed the surface, and nothing else would
+        # say so. A dome revolved from a finely sampled arc came back a flat disc
+        # (16 mm tall to 4 mm), "delivered on all 96 edges", verifier PASS. The
+        # volume alone cannot tell it from a legitimate maximum rounding (a cube
+        # with an oversize width is 41% and fine), so the bounding box leads.
+        v0, v1 = float(solid.volume()), float(out.volume())
+        e0 = np.array(solid.bbox()[1]) - np.array(solid.bbox()[0])
+        e1 = np.array(out.bbox()[1]) - np.array(out.bbox()[0])
+        if v0 > 0.0 and (v1 < 0.25 * v0 or np.any(e1 < 0.75 * e0 - 1e-12)):
+            raise LatheError(
+                "bevel on %s collapsed the solid: %.0f%% of its volume is left and "
+                "its bounding box went from %s to %s mm. A width of %g mm is too "
+                "large for the smallest feature, or the surface is tessellated "
+                "finer than coplanar_deg (%g) and was merged into one face. "
+                "Narrow the width, or lower coplanar_deg."
+                % (solid.name, 100.0 * v1 / v0,
+                   " x ".join("%.1f" % (1000 * x) for x in e0),
+                   " x ".join("%.1f" % (1000 * x) for x in e1),
+                   width * 1000.0, coplanar_deg))
         if not out.status_ok():
             raise LatheError(
                 "bevel on %s produced %s. Width %g is probably too large for the "
