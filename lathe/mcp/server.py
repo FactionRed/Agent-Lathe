@@ -50,6 +50,10 @@ def _fail(exc: Exception) -> str:
         return "PROGRAM ERROR\n%s" % exc
     if isinstance(exc, LatheError):
         return "ERROR\n  %s" % exc
+    if isinstance(exc, OSError):
+        # A file the client named that the filesystem will not take. That is the
+        # client's path, not a server fault.
+        return "ERROR\n  could not write or read that path: %s" % exc
     return "UNEXPECTED %s\n  %s" % (type(exc).__name__, exc)
 
 
@@ -479,7 +483,11 @@ class ExportInput(BaseModel):
     path: str = Field(
         ..., description=("Output path. Format comes from the extension: "
                           "obj and stl are written natively; glb, gltf, fbx, usd "
-                          "and ply route through Blender."),
+                          "and ply route through Blender. A relative path is "
+                          "written under the server's output directory "
+                          "(LATHE_OUT, default ~/.lathe/out), not the working "
+                          "directory. Reserved Windows names (NUL, CON, ...) and "
+                          "characters a file name cannot hold are refused."),
         min_length=3, max_length=1024)
     origin: str = Field(
         default="bottom_center",
@@ -521,8 +529,12 @@ async def lathe_export(params: ExportInput) -> str:
         if fmt not in FORMATS:
             return ("ERROR\n  unknown format %r. Supported: %s."
                     % (fmt, ", ".join(FORMATS)))
+        from ..io.export import safe_destination
+        # Relative paths land in the server's output directory, not in whatever
+        # directory the client happened to start it from.
+        dest = safe_destination(params.path, OUT_DIR)
         info = await _off_loop(
-            do_export, WS.solid(params.ref), params.path,
+            do_export, WS.solid(params.ref), dest,
             materials=params.materials, origin=params.origin)
         return json.dumps(info, indent=2)
     except Exception as exc:
@@ -790,6 +802,8 @@ async def lathe_view(params: ViewInput) -> str:
         if not dest.lower().endswith((".html", ".htm")):
             return ("ERROR\n  the preview is an HTML page, so `path` must end in "
                     ".html (got %r)" % dest)
+        from ..io.export import safe_destination
+        dest = safe_destination(dest, OUT_DIR)
         info = await _off_loop(
             write_view, solid, dest, materials=params.materials or {},
             title=solid.name)
@@ -977,7 +991,11 @@ async def lathe_import(params: ImportInput) -> str:
 
     out += ["", _headline(solid, commit), "  on branch %s" % commit.branch, ""]
     try:
-        out.append(_check(commit.id))
+        # The mesh report above already ran under params.profile. Running the
+        # committed solid again under the default profile printed a second,
+        # different verdict beneath it (a film_usd check, then game_prop_pbr).
+        out.append("  (the report above is the verdict; lathe_check re-runs it on "
+                   "the committed solid under any profile)")
     except Exception as exc:
         out.append("  validation could not run: %s" % exc)
     out += [
@@ -1183,8 +1201,27 @@ async def lathe_setup(params: SetupInput) -> str:
         "  on branch %s" % commit.branch,
         "",
     ]
+    if not a.get("blender_ok", True):
+        # The generated program tries a bevel and falls back to the plain piece
+        # when it cannot, which is right for the piece and must not be silent:
+        # it is the only sign the bevel was never attempted.
+        out.append("  ! no bevel: bevel needs Blender, which was not found. This "
+                   "piece is unbeveled. Set LATHE_BLENDER or put Blender on PATH, "
+                   "then lathe_apply the program again.")
+    for note in commit.bevel_notes:
+        head, _, tail = note.partition("\n")
+        out.append("  ! %s" % head)
+        if tail:
+            out.append("    %s" % tail)
     try:
-        out.append(_check(commit.id))
+        verdict = _check(commit.id)
+        out.append(verdict)
+        if "FAIL" in verdict.splitlines()[0]:
+            # A welcome piece that fails the project's own verifier is a defect in
+            # the generator. Reporting READY above it, as before, read as success.
+            out += ["", "!! this welcome piece FAILS the verifier. That is a bug in "
+                    "the generator, not in your environment -- the program below "
+                    "is still a fair starting point, but report the seed."]
     except Exception as exc:
         out.append("  validation could not run: %s" % exc)
 

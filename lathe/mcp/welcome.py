@@ -207,6 +207,45 @@ STYLES = ("stool", "planter", "lantern", "pedestal")
 
 # --------------------------------------------------------------- generator
 
+def _soften(width_mm, min_dihedral, min_length_mm=None):
+    """Program lines that round every sharp edge, and check they did.
+
+    A bare `bevel(piece, width=...)` is a request, not a promise: bmesh clamps the
+    width globally and says nothing, and unclamped, a thin feature can fold or
+    sever. Across 36 style/seed combinations the bare call produced a bevel that
+    delivered under half its width on 19, and a piece that FAILED the verifier on
+    8 (E101, E105). So the program asks, reads `bevel_report`, and steps the width
+    down until every edge got it and the piece is still one body. It is also the
+    pattern worth showing someone who is about to write their own.
+    """
+    extra = "" if min_length_mm is None else ", min_length=mm(%s)" % min_length_mm
+    return [
+        "# Round every sharp edge. The width is a request: bevel() reports what it",
+        "# delivered, so step down until all but a stray edge or two got it and",
+        "# nothing split. (A sliver in the piece can hold a few edges short at any",
+        "# width; the note under the report says so.)",
+        "width = mm(%s)" % width_mm,
+        "softened = piece",
+        "for _ in range(6):",
+        "    try:",
+        "        trial = bevel(piece, width=width, segments=2, min_dihedral=%s%s,"
+        % (min_dihedral, extra),
+        "                      clamp=False, collect=False)",
+        "    except LatheError:",
+        "        trial = None",
+        "    if trial is not None:",
+        "        r = trial.bevel_report",
+        "        if (r.short + r.unmeasured <= max(2, r.edges // 50)",
+        "                and trial.components() == piece.components()):",
+        "            softened = trial",
+        "            break",
+        "    width = width * 0.7",
+        "if softened is not piece:",
+        "    report_bevel(softened)   # only the kept one goes in the notes",
+        "piece = softened",
+    ]
+
+
 def generate(seed: Optional[int] = None,
              style: Optional[str] = None) -> Dict[str, object]:
     """Build a welcome program. Returns the text plus what was chosen."""
@@ -310,8 +349,9 @@ def _stool(rng, pal):
         ]
     lines += [
         "",
-        "piece = bevel(piece, width=mm(%s), segments=2, min_dihedral=55)"
-        % _r(rng, 1.2, 2.6, 1),
+    ]
+    lines += _soften(_r(rng, 1.2, 2.6, 1), 55)
+    lines += [
         "",
         'spec = {"components": 1, "origin": "bottom_center",',
         '        "budget": {"tris_lod0": 12000}}',
@@ -440,9 +480,9 @@ def _lantern(rng, pal):
         ]
     lines += [
         "",
-        "piece = bevel(piece, width=mm(%s), segments=2, min_dihedral=50,"
-        % _r(rng, 0.8, 1.8, 1),
-        "              min_length=mm(3))",
+    ]
+    lines += _soften(_r(rng, 0.8, 1.8, 1), 50, 3)
+    lines += [
         "",
         'spec = {"components": 1, "origin": "bottom_center",',
         '        "budget": {"tris_lod0": 14000}}',
@@ -507,9 +547,9 @@ def _pedestal(rng, pal):
         "if piece.components() != 1:",
         '    raise LatheError("a tier is not touching the column")',
         "",
-        "piece = bevel(piece, width=mm(%s), segments=2, min_dihedral=52,"
-        % _r(rng, 1.0, 2.2, 1),
-        "              min_length=mm(4))",
+    ]
+    lines += _soften(_r(rng, 1.0, 2.2, 1), 52, 4)
+    lines += [
         "",
         'spec = {"components": 1, "origin": "bottom_center",',
         '        "budget": {"tris_lod0": 14000}}',

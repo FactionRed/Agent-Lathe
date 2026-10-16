@@ -288,7 +288,8 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
           max_dihedral: float = 180.0, min_length: float = 0.0,
           only_tags: Optional[Sequence[str]] = None, new_tag: str = "bevel",
           profile: float = 0.5, clamp: bool = True, coplanar_deg: float = 1.0,
-          verbose: bool = False, edges: Optional[Selection] = None) -> Solid:
+          verbose: bool = False, edges: Optional[Selection] = None,
+          collect: bool = True) -> Solid:
     """Round the edges matching the predicate. Returns a new Solid.
 
     only_tags restricts the bevel to edges whose *both* faces carry one of those
@@ -299,6 +300,10 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
     selection's own and are not applied again. Without it the predicates here pick.
     (The .lathe language used to recover only a selection's dihedral threshold, so
     `bevel(carved, rim)` beveled every edge over it, whatever else `rim` said.)
+
+    `collect=False` keeps this call's report out of the session's notes. A program
+    that tries several widths and keeps one is the use: the rejected trials say
+    nothing about the result. Pass the kept solid to report_bevel() afterwards.
 
     `width` is the distance from the edge along each adjacent face. With
     clamp=True, the default, it is a *ceiling*, not a promise: bmesh shrinks the
@@ -430,7 +435,7 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
                 clamp=bool(clamp), unmeasured=int((~seen).sum()))
             object.__setattr__(out, "bevel_report", rep)
             sink = _SINK.get()
-            if sink is not None:
+            if sink is not None and collect:
                 sink.append(rep)
         # A bevel removes a sliver along each edge. One that shrank the bounding
         # box by a quarter, or left under a quarter of the volume, has not
@@ -461,6 +466,16 @@ def bevel(solid: Solid, width: float, segments: int = 2, min_dihedral: float = 3
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def report_bevel(solid: Solid) -> Solid:
+    """Add `solid`'s bevel report to the session's notes. For a result chosen
+    among bevel(..., collect=False) trials. Returns the solid."""
+    rep = getattr(solid, "bevel_report", None)
+    sink = _SINK.get()
+    if rep is not None and sink is not None:
+        sink.append(rep)
+    return solid
 
 
 def _tagged_manifold(verts, tris, part_id):

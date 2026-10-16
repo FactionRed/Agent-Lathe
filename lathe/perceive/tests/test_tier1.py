@@ -280,6 +280,37 @@ def test_raycast_hits_at_the_exact_distance():
     assert p.fields["all_distances_m"][1] == pytest.approx(2.0, abs=EXACT)
 
 
+@pytest.mark.parametrize("start", [0.5, 1.1, 1.3, 2.0, 5.0, 25.0])
+def test_raycast_finds_a_closed_solid_from_any_distance(start):
+    """Bug hunt B15. The search limit was 4 x the diagonal measured from the
+    ray's origin, so a ray started 1.3 m from a 0.2 m cube found no surface
+    ('miss, check the aim') and one started 1.1 m away found the entry and lost
+    the exit, reporting a hole in a closed cube."""
+    cube = fx.unit_cube()
+    p = tier1.raycast(cube, Point.m(0.5, 0.5, -start), "+Z")
+    assert p.fields["hit"] is True
+    assert p.fields["distance_m"] == pytest.approx(start, abs=1e-9)
+    assert p.fields["hits"] == 2
+    assert not any("odd crossing" in x for x in p.problems), p.problems
+
+
+def test_raycast_from_far_away_still_searches_the_far_side():
+    p = tier1.raycast(fx.unit_cube(), Point.m(0.5, 0.5, 100.0), "-Z")
+    assert p.fields["hits"] == 2
+    assert p.fields["all_distances_m"] == pytest.approx((99.0, 100.0), abs=1e-9)
+
+
+def test_a_truncated_search_does_not_claim_a_hole():
+    """An explicit max_distance that stops inside the solid has seen one
+    crossing of two. That is a short search, not an open surface."""
+    p = tier1.raycast(fx.unit_cube(), Point.m(0.5, 0.5, -1.0), "+Z",
+                      max_distance=Length.m(1.5))
+    assert p.fields["hit"] is True
+    assert p.fields["hits"] == 1
+    assert not any("odd crossing" in x for x in p.problems)
+    assert any("search stopped" in x for x in p.problems)
+
+
 def test_raycast_reports_the_provenance_tag_it_hit():
     """DESIGN.md 6: 'hit final #cut_face at 1.71 m'."""
     p = tier1.raycast(fx.crate(), Point.m(0.0, -2.0, 0.29), "+Y")

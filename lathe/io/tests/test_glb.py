@@ -171,6 +171,94 @@ class TestGltfJson(GlbCase):
         self.assertIn("not next to", str(ctx.exception))
 
 
+class TestHostileStructure(GlbCase):
+    """The file's own fields are attacker-controlled (bug hunt B12).
+
+    A 769-byte .gltf with an accessor of count 16,000,000 and no bufferView made
+    the reader allocate 2.7 GB, and 4e8 would have taken 68 GB. A count of -3
+    imported a garbage vertex, a byteStride of -12 read garbage, count "abc" was a
+    bare ValueError, `meshes: {}` a KeyError, and a 3000-deep node chain a
+    RecursionError. Each is now a GlbError that names the file.
+    """
+
+    def _mutated(self, name, mutate):
+        b = F.Builder()
+        pos, tris = F.cube_split(1.0)
+        doc = F.document(b, [[F.primitive(b, pos, tris)]])
+        mutate(doc)
+        return F.write_gltf(os.path.join(self.tmp, name + ".gltf"), doc,
+                            bytes(b.bin))
+
+    def _refused(self, name, mutate, needle=None):
+        path = self._mutated(name, mutate)
+        with self.assertRaises(glb.GlbError) as ctx:
+            glb.read(path)
+        if needle:
+            self.assertIn(needle, str(ctx.exception))
+        return str(ctx.exception)
+
+    def test_the_unmutated_file_is_the_control(self):
+        path = self._mutated("control", lambda d: None)
+        self.assertEqual(glb.read(path).mesh.n_tris, 12)
+
+    def test_a_count_with_no_data_behind_it_is_not_allocated(self):
+        import tracemalloc
+
+        def mut(d):
+            acc = d["accessors"][0]
+            acc.pop("bufferView", None)
+            acc["count"] = 16_000_000
+        path = self._mutated("novirtual", mut)
+        tracemalloc.start()
+        try:
+            with self.assertRaises(glb.GlbError) as ctx:
+                glb.read(path)
+            _cur, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertIn("no bufferView", str(ctx.exception))
+        self.assertLess(peak, 50 * 1024 * 1024, "peak %d bytes" % peak)
+
+    def test_counts_that_are_not_counts_are_refused(self):
+        for label, value in (("negative", -3), ("string", "abc"), ("float", 3.5),
+                             ("bool", True), ("null", None), ("huge", 10 ** 30)):
+            with self.subTest(count=label):
+                def mut(d, v=value):
+                    d["accessors"][0]["count"] = v
+                self._refused("count_" + label, mut)
+
+    def test_strides_and_offsets_that_cannot_be_real_are_refused(self):
+        cases = (("neg_stride", "byteStride", -12), ("huge_stride", "byteStride", 2 ** 40),
+                 ("small_stride", "byteStride", 4), ("neg_offset", "byteOffset", -12))
+        for label, key, value in cases:
+            with self.subTest(case=label):
+                def mut(d, k=key, v=value):
+                    d["bufferViews"][0][k] = v
+                self._refused(label, mut)
+
+    def test_containers_of_the_wrong_type_are_a_glb_error(self):
+        for label, key, value in (("meshes_dict", "meshes", {"a": 1}),
+                                  ("nodes_int", "nodes", [5]),
+                                  ("accessors_str", "accessors", "x")):
+            with self.subTest(case=label):
+                def mut(d, k=key, v=value):
+                    d[k] = v
+                self._refused(label, mut)
+
+    def test_a_node_chain_deeper_than_the_walk_is_refused(self):
+        def mut(d):
+            d["nodes"] = ([{"mesh": 0, "children": [1]}]
+                          + [{"children": [i + 2]} for i in range(1, 3000)]
+                          + [{"mesh": 0}])
+        self._refused("deep", mut, "levels deep")
+
+    def test_a_node_that_is_its_own_child_does_not_hang(self):
+        def mut(d):
+            d["nodes"] = [{"mesh": 0, "children": [0]}]
+        path = self._mutated("selfchild", mut)
+        self.assertEqual(glb.read(path).mesh.n_tris, 12)
+
+
 class TestUriSafety(GlbCase):
     """A URI in a .gltf is attacker-controlled text. Reading a model must not
     become an arbitrary-file-read primitive."""

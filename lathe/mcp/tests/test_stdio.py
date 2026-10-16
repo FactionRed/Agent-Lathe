@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
@@ -99,7 +100,11 @@ async def main():
     do_render = "--render" in sys.argv
     params = StdioServerParameters(
         command=sys.executable, args=["-m", "lathe.mcp.server"], cwd=REPO,
-        env=dict(os.environ, PYTHONPATH=REPO))
+        # LATHE_OUT in a temp directory: unset, the server writes its previews
+        # and renders into ~/.lathe/out, and this test did (import_<sha>_preview
+        # .html in the user's home, found by the bug hunt).
+        env=dict(os.environ, PYTHONPATH=REPO,
+                 LATHE_OUT=tempfile.mkdtemp(prefix="lathe_wire_out_")))
 
     print("spawning: %s -m lathe.mcp.server" % os.path.basename(sys.executable))
     async with stdio_client(params) as (read, write):
@@ -136,9 +141,10 @@ async def main():
                       "result = piece" in body or "result = pot" in body)
                 check("lathe_setup honours a forced style", "'lantern'" in body)
             else:
-                # Every style bevels, so without Blender there is no piece to
-                # build. What matters is that it says *why*: it used to answer
-                # "a bug in the generator, not in your environment".
+                # Every style bevels. The generated program falls back to the
+                # plain piece when it cannot, and that must not be silent: setup
+                # used to fail whole with "a bug in the generator, not in your
+                # environment".
                 check("lathe_setup names the missing Blender",
                       "needs Blender" in body and "not found" in body,
                       body[-200:].replace("\n", " "))

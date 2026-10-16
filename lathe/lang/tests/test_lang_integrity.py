@@ -148,6 +148,16 @@ class TestEmitIsDeclarative(unittest.TestCase):
         self.assertEqual(o["origin"], "bottom_center")
 
 
+class TestSolveTolerance(unittest.TestCase):
+    def test_a_non_positive_within_is_an_error_not_unreachable(self):
+        from lathe.lang.tests.test_lang import ARM
+        for tol in ("-1mm", "0mm"):
+            with self.subTest(within=tol):
+                msg = fails(ARM + "solve { reach head to (-280mm, 0mm, 460mm) "
+                            "within %s }\n" % tol + EMIT)
+                self.assertIn("within must be a positive length", msg)
+
+
 class TestSourceText(unittest.TestCase):
     def test_a_byte_order_mark_is_not_a_syntax_error(self):
         solid, _ = run("﻿" + BOX + EMIT)

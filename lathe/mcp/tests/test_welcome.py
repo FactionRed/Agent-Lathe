@@ -117,5 +117,56 @@ class TestAudit(unittest.TestCase):
             welcome.DEPS = real
 
 
+@needs_blender
+class TestWelcomePiecesPassTheVerifier(unittest.TestCase):
+    """Bug hunt B9. The first-run experience built pieces that FAILED the
+    project's own verifier (8 of 40 style/seed combinations: E101, E105), and
+    lathe_setup said READY above them. These are the combinations that did, and
+    a bevel that delivered under half its width on 19 of 36.
+
+    Every case must pass, be one body, and be honest: a shortfall that survives
+    is allowed, but it has to be in the notes.
+    """
+
+    # (style, seed) that failed the verifier before the program checked itself.
+    FAILED_BEFORE = (("stool", 0), ("stool", 20260728), ("stool", 123456789),
+                     ("lantern", 1), ("lantern", 7), ("pedestal", 20))
+
+    def _build(self, style, seed):
+        from lathe.mcp import server
+        server.WS = Workspace()
+        w = welcome.generate(seed, style)
+        res = server.WS.apply(w["program"], "welcome", branch="welcome")
+        return server, res[0], server._check(res[0].id)
+
+    def test_the_combinations_that_failed_now_pass_as_one_body(self):
+        for style, seed in self.FAILED_BEFORE:
+            with self.subTest(style=style, seed=seed):
+                _server, commit, verdict = self._build(style, seed)
+                self.assertIn("PASS", verdict.splitlines()[0], verdict[:300])
+                self.assertEqual(commit.n_components, 1)
+
+    def test_a_surviving_shortfall_is_a_note_not_silence(self):
+        _server, commit, _v = self._build("lantern", 1)
+        self.assertTrue(any("came out short" in n for n in commit.bevel_notes),
+                        commit.bevel_notes)
+
+    def test_rejected_widths_are_not_in_the_notes(self):
+        """The program tries wider bevels and keeps one. Only the kept bevel
+        speaks for the result; six notes about discarded trials would bury it."""
+        _server, commit, _v = self._build("pedestal", 20)
+        self.assertLessEqual(len(commit.bevel_notes), 1, commit.bevel_notes)
+
+    def test_lathe_setup_prints_the_note_and_does_not_hide_a_failure(self):
+        import asyncio
+        from lathe.mcp import server
+        server.WS = Workspace()
+        out = asyncio.run(server.lathe_setup(server.SetupInput(
+            seed=1, style="lantern", build=True, check_upstream=False)))
+        self.assertIn("came out short", out)
+        self.assertIn("PASS", out)
+        self.assertNotIn("FAILS the verifier", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

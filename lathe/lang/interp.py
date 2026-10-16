@@ -380,6 +380,12 @@ class Interp:
             tol = DEFAULT_TOLERANCE
             if goal.within is not None:
                 tol = V.as_metres(self.eval(goal.within), "within")
+                if not tol > 0.0:
+                    self.die("within must be a positive length, got %g mm"
+                             % (tol * 1000.0), goal.within,
+                             "e.g. `within 2mm`. A negative or zero tolerance is "
+                             "unreachable by construction and was reported as "
+                             "'unreachable ... 0.0000 mm'.")
             root = self.chain_root(sk, goal.tip)
             try:
                 hit = solve(sk, root, goal.tip, target, seed=self.pose,

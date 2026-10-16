@@ -242,8 +242,20 @@ class Solid:
             keep &= np.isin(msh.part_id, ids)
         nrm = pmesh.tri_normals(msh)
         if normal is not None:
-            want = np.asarray(normal, dtype=np.float64)
-            want = want / np.linalg.norm(want)
+            try:
+                want = np.asarray(normal, dtype=np.float64)
+            except (TypeError, ValueError):
+                want = np.zeros(0)
+            if want.shape != (3,) or not np.all(np.isfinite(want)):
+                raise LatheError(
+                    "faces(normal=...) needs three finite numbers, got %r. "
+                    "e.g. normal=(0, 0, 1) for faces pointing up." % (normal,))
+            length = float(np.linalg.norm(want))
+            if length < 1e-12:
+                raise LatheError(
+                    "faces(normal=...) needs a direction, and (0, 0, 0) has none "
+                    "(it matched nothing and printed nan).")
+            want = want / length
             terms.append("normal ~ (%.3g, %.3g, %.3g)" % tuple(want))
             keep &= np.linalg.norm(nrm - want, axis=1) <= normal_tol
         if area_gt is not None or area_lt is not None:

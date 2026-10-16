@@ -312,6 +312,29 @@ def _read_external(uri: str, base: str, index: int) -> bytes:
 
 # ------------------------------------------------------------------ accessors
 
+# A glTF can name a count it has no bytes for (an accessor with no bufferView is
+# all zeros, and a sparse block sets some of them), and the reader then allocates
+# the count. 769 bytes of JSON asked for 2.7 GB that way, and a count of 4e8 for
+# 68 GB. Nothing real reads a million vertices from nothing.
+MAX_VIRTUAL_COUNT = 2_000_000
+# Deeper than the interpreter's own recursion limit allows the walk to follow,
+# and deeper than any scene a person made.
+MAX_NODE_DEPTH = 400
+
+
+def _nat(value, what: str, lo: int = 0, hi: Optional[int] = None) -> int:
+    """A JSON number that must be a whole number in range. `int()` alone turned
+    "abc" into a bare ValueError, 3.9 into 3, and -3 into a garbage vertex."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise GlbError("%s is %r, expected a whole number" % (what, value))
+    if isinstance(value, float) and (value != value or value != int(value)):
+        raise GlbError("%s is %r, expected a whole number" % (what, value))
+    n = int(value)
+    if n < lo or (hi is not None and n > hi):
+        raise GlbError("%s is %d, outside %d..%s"
+                       % (what, n, lo, "inf" if hi is None else hi))
+    return n
+
 
 def _accessor(gltf: dict, buffers: Dict[int, bytes], index: int,
               want: Optional[str] = None) -> np.ndarray:
@@ -327,7 +350,9 @@ def _accessor(gltf: dict, buffers: Dict[int, bytes], index: int,
         raise GlbError("accessor %d does not exist (%d accessors)"
                        % (index, len(accessors)))
     acc = accessors[index]
-    ctype = int(acc.get("componentType", 0))
+    if not isinstance(acc, dict):
+        raise GlbError("accessor %d is not an object" % index)
+    ctype = _nat(acc.get("componentType", 0), "accessor %d componentType" % index)
     if ctype not in _COMPONENT:
         raise GlbError("accessor %d has unknown componentType %d" % (index, ctype))
     kind = str(acc.get("type", ""))
@@ -338,16 +363,23 @@ def _accessor(gltf: dict, buffers: Dict[int, bytes], index: int,
 
     dtype, csize, is_int = _COMPONENT[ctype]
     ncomp = _TYPE_COUNT[kind]
-    count = int(acc.get("count", 0))
+    count = _nat(acc.get("count", 0), "accessor %d count" % index)
 
     if "bufferView" not in acc:
         # The spec allows an accessor with no bufferView: every value is zero,
         # and a sparse block supplies the non-zero ones.
+        if count > MAX_VIRTUAL_COUNT:
+            raise GlbError(
+                "accessor %d declares %d elements and has no bufferView to hold "
+                "them; this reader allocates at most %d for an accessor with no "
+                "data. The count is not the file's own."
+                % (index, count, MAX_VIRTUAL_COUNT))
         data = np.zeros((count, ncomp), dtype=np.float64)
     else:
-        data = _read_view(gltf, buffers, int(acc["bufferView"]),
-                          int(acc.get("byteOffset", 0)), count, ncomp, dtype,
-                          csize, index)
+        data = _read_view(
+            gltf, buffers, _nat(acc["bufferView"], "accessor %d bufferView" % index),
+            _nat(acc.get("byteOffset", 0), "accessor %d byteOffset" % index),
+            count, ncomp, dtype, csize, index)
 
     if "sparse" in acc:
         data = _apply_sparse(gltf, buffers, acc["sparse"], data, ncomp, dtype,
@@ -371,15 +403,24 @@ def _read_view(gltf: dict, buffers: Dict[int, bytes], view_index: int,
         raise GlbError("accessor %d points at bufferView %d, which does not exist"
                        % (acc_index, view_index))
     view = views[view_index]
-    buf_index = int(view.get("buffer", 0))
+    if not isinstance(view, dict):
+        raise GlbError("bufferView %d is not an object" % view_index)
+    buf_index = _nat(view.get("buffer", 0), "bufferView %d buffer" % view_index)
     if buf_index not in buffers:
         raise GlbError("bufferView %d points at buffer %d, which was not loaded"
                        % (view_index, buf_index))
     blob = buffers[buf_index]
 
     elem = ncomp * csize
-    stride = int(view.get("byteStride", 0)) or elem
-    start = int(view.get("byteOffset", 0)) + acc_offset
+    raw_stride = _nat(view.get("byteStride", 0), "bufferView %d byteStride"
+                      % view_index, 0, 65536)
+    if raw_stride and raw_stride < elem:
+        raise GlbError(
+            "bufferView %d has byteStride %d, smaller than the %d bytes of one "
+            "element" % (view_index, raw_stride, elem))
+    stride = raw_stride or elem
+    start = _nat(view.get("byteOffset", 0), "bufferView %d byteOffset"
+                 % view_index) + acc_offset
     if count == 0:
         return np.zeros((0, ncomp), dtype=np.float64)
     need = stride * (count - 1) + elem
@@ -406,9 +447,12 @@ def _apply_sparse(gltf: dict, buffers: Dict[int, bytes], sparse: dict,
                   acc_index: int) -> np.ndarray:
     """Overwrite the rows a sparse block names. Values carry the accessor's own
     component type; only the *indices* have a type of their own."""
-    n = int(sparse.get("count", 0))
+    n = _nat(sparse.get("count", 0), "accessor %d sparse count" % acc_index)
     if n <= 0:
         return data
+    if n > len(data):
+        raise GlbError("accessor %d has a sparse block of %d overrides for %d "
+                       "elements" % (acc_index, n, len(data)))
     idx_spec = sparse.get("indices") or {}
     val_spec = sparse.get("values") or {}
     if "bufferView" not in idx_spec or "bufferView" not in val_spec:
@@ -491,9 +535,13 @@ def _walk(gltf: dict) -> List[Tuple[int, np.ndarray, str]]:
 
     seen: set = set()
 
-    def visit(index: int, parent: np.ndarray, trail: str) -> None:
+    def visit(index: int, parent: np.ndarray, trail: str, depth: int = 0) -> None:
         if index in seen or not 0 <= index < len(nodes):
             return  # a cycle is malformed, but must not hang the reader
+        if depth > MAX_NODE_DEPTH:
+            raise GlbError(
+                "the node tree is more than %d levels deep, which no modelling "
+                "tool writes and the reader will not recurse into" % MAX_NODE_DEPTH)
         seen.add(index)
         node = nodes[index]
         world = parent @ _node_matrix(node)
@@ -502,7 +550,7 @@ def _walk(gltf: dict) -> List[Tuple[int, np.ndarray, str]]:
         if "mesh" in node:
             out.append((int(node["mesh"]), world, path))
         for child in node.get("children") or []:
-            visit(int(child), world, path)
+            visit(int(child), world, path, depth + 1)
         seen.discard(index)  # a node may legitimately be reached once per parent
 
     for r in roots:
@@ -605,6 +653,32 @@ def read(path: str, weld: bool = True, weld_tol: float = DEFAULT_WELD_TOL,
          up: str = "y", name: Optional[str] = None,
          tag: Optional[str] = None) -> GlbImport:
     """Read a .glb or .gltf into a neutral Mesh, and a Solid where possible.
+
+    Anything the file's own structure does wrong -- a field of the wrong type, a
+    missing array, a reference to nothing -- is a GlbError naming the file. The
+    reader is handed attacker-controlled data (DESIGN.md section 13), and a bare
+    KeyError or ValueError from inside it tells the caller nothing.
+    """
+    try:
+        return _read(path, weld, weld_tol, up, name, tag)
+    except GlbError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError,
+            RecursionError, OverflowError) as exc:
+        raise GlbError(
+            "%s is not a glTF this reader can follow: %s: %s. A field has the "
+            "wrong type, or a reference points at nothing."
+            % (os.path.basename(path), type(exc).__name__, str(exc)[:160])) from None
+    except MemoryError:
+        raise GlbError(
+            "%s asks for more memory than this reader will allocate"
+            % os.path.basename(path)) from None
+
+
+def _read(path: str, weld: bool, weld_tol: float, up: str,
+          name: Optional[str], tag: Optional[str]) -> GlbImport:
+    """The body of read(). See there.
+
 
     up: "y" for the glTF convention (converted to Lathe's Z-up), or "z" for a
         file already authored Z-up, which some exporters emit in defiance of the
